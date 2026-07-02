@@ -65,6 +65,9 @@ func (m *model) refreshList() {
 func (m model) Init() tea.Cmd { return nil }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.list.SetSize(ws.Width, ws.Height)
 		return m, nil
@@ -82,7 +85,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
-		case "q", "ctrl+c":
+		case "q", "esc":
 			return m, tea.Quit
 		case "a":
 			return m.openForm("", config.Profile{})
@@ -139,22 +142,39 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 		m.form.err = err.Error()
 		return m, nil
 	}
+	prev := cloneProfiles(m.cfg.Profiles)
 	if m.form.origName != "" && m.form.origName != name {
 		delete(m.cfg.Profiles, m.form.origName)
 	}
 	m.cfg.Profiles[name] = p
-	return m.saveAndList()
-}
-
-func (m model) saveAndList() (tea.Model, tea.Cmd) {
-	if err := config.Save(m.path, m.cfg); err != nil {
-		m.err = err
-	} else {
-		m.err = nil
+	if err := commitProfiles(m.path, m.cfg, prev); err != nil {
+		m.form.err = "save failed: " + err.Error()
+		return m, nil
 	}
 	m.refreshList()
 	m.mode = modeList
+	m.err = nil
 	return m, nil
+}
+
+// cloneProfiles returns a shallow copy of p so a mutation can be snapshotted
+// before a save and rolled back if the save fails.
+func cloneProfiles(p map[string]config.Profile) map[string]config.Profile {
+	out := make(map[string]config.Profile, len(p))
+	for k, v := range p {
+		out[k] = v
+	}
+	return out
+}
+
+// commitProfiles saves cfg to path. On failure it restores prev into
+// cfg.Profiles so in-memory state never diverges from what is on disk.
+func commitProfiles(path string, cfg *config.Config, prev map[string]config.Profile) error {
+	if err := config.Save(path, cfg); err != nil {
+		cfg.Profiles = prev
+		return err
+	}
+	return nil
 }
 
 func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -163,9 +183,18 @@ func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch key.String() {
-	case "y", "Y", "enter":
+	case "y", "Y":
+		prev := cloneProfiles(m.cfg.Profiles)
 		delete(m.cfg.Profiles, m.confirmName)
-		return m.saveAndList()
+		if err := commitProfiles(m.path, m.cfg, prev); err != nil {
+			m.err = err
+			m.mode = modeList
+			return m, nil
+		}
+		m.refreshList()
+		m.mode = modeList
+		m.err = nil
+		return m, nil
 	case "n", "N", "esc":
 		m.mode = modeList
 		return m, nil

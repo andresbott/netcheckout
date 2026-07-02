@@ -51,6 +51,32 @@ func TestListQuit(t *testing.T) {
 	}
 }
 
+func TestListEscQuits(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected a command from esc in list mode")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected QuitMsg")
+	}
+}
+
+func TestFormCtrlCQuits(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")}) // open add form
+	if m.mode != modeForm {
+		t.Fatalf("want modeForm, got %d", m.mode)
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("expected a command from ctrl+c in form mode")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected QuitMsg")
+	}
+}
+
 func TestListViewNotEmpty(t *testing.T) {
 	m := newModel(filepath.Join(t.TempDir(), "x.yaml"), testConfig())
 	if m.View() == "" {

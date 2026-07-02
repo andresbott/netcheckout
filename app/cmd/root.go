@@ -24,9 +24,10 @@ func newRootCommand() *cobra.Command {
 	var cfgPath string
 
 	cmd := &cobra.Command{
-		Use:          "netcheckout",
-		Short:        "netcheckout: check out and check in work directories over network drives",
-		SilenceUsage: true,
+		Use:           "netcheckout",
+		Short:         "netcheckout: check out and check in work directories over network drives",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolvePath(cfgPath)
 			if err != nil {
