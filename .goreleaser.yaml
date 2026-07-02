@@ -1,0 +1,50 @@
+version: 2
+before:
+  hooks:
+    - go mod tidy
+builds:
+  # =====================================================================================
+  # single pure-Go build for linux + darwin (rsync is shelled out; no CGO)
+  # =====================================================================================
+  - id: netcheckout
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/andresbott/netcheckout/app/metainfo.Version={{.Version}}
+      - -X github.com/andresbott/netcheckout/app/metainfo.BuildTime={{.Date}}
+      - -X github.com/andresbott/netcheckout/app/metainfo.ShaVer={{.Commit}}
+    binary: netcheckout
+
+archives:
+  - formats: [tar.gz]
+    # this name template makes the OS and Arch compatible with the results of uname.
+    name_template: >-
+      netcheckout_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: 'checksums.txt'
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
