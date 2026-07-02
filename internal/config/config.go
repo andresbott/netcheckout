@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -81,4 +82,35 @@ func DefaultPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "netcheckout", "config.yaml"), nil
+}
+
+// ExpandRoot expands environment variables and a leading ~ in a root path.
+func ExpandRoot(root string) string {
+	expanded := os.ExpandEnv(root)
+	if expanded == "~" || strings.HasPrefix(expanded, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			expanded = filepath.Join(home, strings.TrimPrefix(expanded, "~"))
+		}
+	}
+	return expanded
+}
+
+// ValidateName reports whether a profile name is usable.
+func ValidateName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("profile name is required")
+	}
+	return nil
+}
+
+// ValidateRoot reports whether a root path is usable: non-empty and absolute
+// once ~ and environment variables are expanded.
+func ValidateRoot(root string) error {
+	if strings.TrimSpace(root) == "" {
+		return errors.New("root path is required")
+	}
+	if !filepath.IsAbs(ExpandRoot(root)) {
+		return errors.New("root path must be absolute")
+	}
+	return nil
 }

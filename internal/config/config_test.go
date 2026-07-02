@@ -121,3 +121,44 @@ func TestDefaultPathFallback(t *testing.T) {
 		t.Fatalf("got %q, want suffix %q", got, want)
 	}
 }
+
+func TestValidateName(t *testing.T) {
+	if err := config.ValidateName(""); err == nil {
+		t.Error("empty name should be invalid")
+	}
+	if err := config.ValidateName("  "); err == nil {
+		t.Error("blank name should be invalid")
+	}
+	if err := config.ValidateName("work"); err != nil {
+		t.Errorf("valid name rejected: %v", err)
+	}
+}
+
+func TestExpandRoot(t *testing.T) {
+	t.Setenv("HOME", "/home/tester")
+	if got := config.ExpandRoot("~/pics"); got != "/home/tester/pics" {
+		t.Errorf("tilde: got %q", got)
+	}
+	if got := config.ExpandRoot("$HOME/pics"); got != "/home/tester/pics" {
+		t.Errorf("env: got %q", got)
+	}
+	if got := config.ExpandRoot("/abs/path"); got != "/abs/path" {
+		t.Errorf("abs: got %q", got)
+	}
+}
+
+func TestValidateRoot(t *testing.T) {
+	t.Setenv("HOME", "/home/tester")
+	if err := config.ValidateRoot(""); err == nil {
+		t.Error("empty root should be invalid")
+	}
+	if err := config.ValidateRoot("relative/path"); err == nil {
+		t.Error("relative root should be invalid")
+	}
+	if err := config.ValidateRoot("/mnt/nas"); err != nil {
+		t.Errorf("absolute root rejected: %v", err)
+	}
+	if err := config.ValidateRoot("~/work"); err != nil {
+		t.Errorf("tilde root rejected: %v", err)
+	}
+}
