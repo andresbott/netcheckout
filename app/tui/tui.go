@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -21,6 +23,7 @@ type model struct {
 	cfg         *config.Config
 	mode        mode
 	list        list.Model
+	form        formModel
 	confirmName string // populated in confirm mode (Task 9)
 	err         error
 }
@@ -66,7 +69,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.SetSize(ws.Width, ws.Height)
 		return m, nil
 	}
-	return m.updateList(msg)
+	switch m.mode {
+	case modeForm:
+		return m.updateForm(msg)
+	default:
+		return m.updateList(msg)
+	}
 }
 
 func (m model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -74,6 +82,13 @@ func (m model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "a":
+			return m.openForm("", config.Profile{})
+		case "e", "enter":
+			if it, ok := m.list.SelectedItem().(profileItem); ok {
+				return m.openForm(it.name, config.Profile{LocalRoot: it.local, RemoteRoot: it.remote})
+			}
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd
@@ -81,7 +96,81 @@ func (m model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) openForm(origName string, p config.Profile) (tea.Model, tea.Cmd) {
+	m.form = newForm(origName, p)
+	m.mode = modeForm
+	return m, textinput.Blink
+}
+
+func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		var cmd tea.Cmd
+		m.form, cmd = m.form.updateInputs(msg)
+		return m, cmd
+	}
+	switch key.String() {
+	case "esc":
+		m.mode = modeList
+		return m, nil
+	case "enter":
+		return m.submitForm()
+	case "tab", "down":
+		return m, m.form.focusNext()
+	case "shift+tab", "up":
+		return m, m.form.focusPrev()
+	}
+	var cmd tea.Cmd
+	m.form, cmd = m.form.updateInputs(msg)
+	return m, cmd
+}
+
+func (m model) submitForm() (tea.Model, tea.Cmd) {
+	name, p := m.form.values()
+	if err := validateProfile(m.cfg, m.form.origName, name, p); err != nil {
+		m.form.err = err.Error()
+		return m, nil
+	}
+	if m.form.origName != "" && m.form.origName != name {
+		delete(m.cfg.Profiles, m.form.origName)
+	}
+	m.cfg.Profiles[name] = p
+	return m.saveAndList()
+}
+
+func (m model) saveAndList() (tea.Model, tea.Cmd) {
+	if err := config.Save(m.path, m.cfg); err != nil {
+		m.err = err
+	} else {
+		m.err = nil
+	}
+	m.refreshList()
+	m.mode = modeList
+	return m, nil
+}
+
+func validateProfile(cfg *config.Config, origName, name string, p config.Profile) error {
+	if err := config.ValidateName(name); err != nil {
+		return err
+	}
+	if name != origName {
+		if _, exists := cfg.Profiles[name]; exists {
+			return fmt.Errorf("profile %q already exists", name)
+		}
+	}
+	if err := config.ValidateRoot(p.LocalRoot); err != nil {
+		return fmt.Errorf("local root: %w", err)
+	}
+	if err := config.ValidateRoot(p.RemoteRoot); err != nil {
+		return fmt.Errorf("remote root: %w", err)
+	}
+	return nil
+}
+
 func (m model) View() string {
+	if m.mode == modeForm {
+		return m.form.View()
+	}
 	return m.listView()
 }
 
