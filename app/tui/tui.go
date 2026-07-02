@@ -283,7 +283,7 @@ func (m model) View() string {
 
 func (m model) tableView() string {
 	body := titleStyle.Render("Profiles") + "\n\n" +
-		tableBorderStyle.Render(m.table.View()) + "\n\n" +
+		borderStyle.Render(m.table.View()) + "\n\n" +
 		helpStyle.Render("a add • e edit • d delete • q quit")
 	if m.err != nil {
 		body += "\n" + errStyle.Render("save failed: "+m.err.Error())

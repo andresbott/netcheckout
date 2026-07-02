@@ -70,24 +70,28 @@ func (f formModel) values() (string, config.Profile) {
 }
 
 func (f formModel) View() string {
-	var b strings.Builder
 	title := "Add profile"
 	if f.origName != "" {
 		title = "Edit profile: " + f.origName
 	}
-	b.WriteString(titleStyle.Render(title))
-	b.WriteString("\n\n")
+
+	var content strings.Builder
 	labels := []string{"Name", "Local root", "Remote root"}
 	for i := range f.inputs {
-		b.WriteString(labelStyle.Render(labels[i]))
-		b.WriteString("\n")
-		b.WriteString(f.inputs[i].View())
-		b.WriteString("\n\n")
+		if i > 0 {
+			content.WriteString("\n\n")
+		}
+		content.WriteString(labelStyle.Render(labels[i]))
+		content.WriteString("\n")
+		content.WriteString(f.inputs[i].View())
 	}
 	if f.err != "" {
-		b.WriteString(errStyle.Render(f.err))
-		b.WriteString("\n\n")
+		content.WriteString("\n\n")
+		content.WriteString(errStyle.Render(f.err))
 	}
-	b.WriteString(helpStyle.Render("tab: next • enter: save • esc: cancel"))
-	return appStyle.Render(b.String())
+
+	body := titleStyle.Render(title) + "\n\n" +
+		borderStyle.Padding(0, 1).Render(content.String()) + "\n\n" +
+		helpStyle.Render("tab: next • enter: save • esc: cancel")
+	return appStyle.Render(body)
 }

@@ -3,11 +3,21 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// TestFormViewHasBorder guards visual consistency with the table view: the
+// form's labeled inputs must render inside the same thick border.
+func TestFormViewHasBorder(t *testing.T) {
+	f := newForm("photos", config.Profile{LocalRoot: "/l", RemoteRoot: "/r"})
+	if view := f.View(); !strings.Contains(view, "┏") || !strings.Contains(view, "┛") {
+		t.Fatalf("form view missing thick border corners:\n%s", view)
+	}
+}
 
 func typeRunes(t *testing.T, m model, s string) model {
 	t.Helper()
