@@ -11,7 +11,7 @@ See [`GOALS.md`](./GOALS.md) for the full design.
 
 ## Install
 
-### Homebrew
+### macOS (Homebrew)
 
 A macOS cask is published into this repository on every tagged release. Because the repo
 isn't named `homebrew-*`, tap it with an explicit URL, then install:
@@ -23,7 +23,19 @@ brew install --cask andresbott/tap/netcheckout
 
 `rsync` is pulled in as a dependency, and `brew upgrade` will track future releases.
 
-Or grab a prebuilt archive from the
+### Debian / Ubuntu
+
+Download the `.deb` for your architecture from the
+[releases page](https://github.com/andresbott/netcheckout/releases) and install it
+(this also pulls in `rsync`):
+
+```bash
+sudo apt install ./netcheckout_*_amd64.deb
+```
+
+### Other
+
+Grab a prebuilt `tar.gz` archive from the
 [releases page](https://github.com/andresbott/netcheckout/releases).
 
 ## Build

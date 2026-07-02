@@ -38,6 +38,31 @@ archives:
       - LICENSE
       - README.md
 
+nfpms:
+  # build a .deb for linux (rsync is a runtime dependency). only linux builds
+  # are packaged; the darwin binaries are skipped automatically.
+  - id: netcheckout
+    package_name: netcheckout
+    ids:
+      - netcheckout
+    formats:
+      - deb
+    maintainer: "Andres Bott <contact@andresbott.com>"
+    homepage: "https://github.com/andresbott/netcheckout"
+    description: "CLI to check out/in work directories over network drives via rsync"
+    license: "AGPL-3.0"
+    section: utils
+    priority: optional
+    dependencies:
+      - rsync
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/netcheckout/copyright
+    deb:
+      # the go binary is statically linked (CGO_ENABLED=0); silence lintian.
+      lintian_overrides:
+        - statically-linked-binary
+
 homebrew_casks:
   # publish a macOS cask into this same repo (Casks/netcheckout.rb).
   # linux is distributed as a .deb, so a macOS-only cask is fine — and it's the
