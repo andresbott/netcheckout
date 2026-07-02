@@ -18,6 +18,8 @@ func Execute() {
 }
 
 func newRootCommand() *cobra.Command {
+	var cfgPath string
+
 	cmd := &cobra.Command{
 		Use:   "netcheckout",
 		Short: "netcheckout: check out and check in work directories over network drives",
@@ -28,8 +30,11 @@ func newRootCommand() *cobra.Command {
 		return nil
 	})
 
+	cmd.PersistentFlags().StringVar(&cfgPath, "config", "", "path to the config file (default: OS config dir)")
+
 	cmd.AddCommand(
 		versionCmd(),
+		newListCmd(&cfgPath),
 	)
 
 	return cmd
