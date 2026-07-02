@@ -127,3 +127,25 @@ func TestViewFitsWindowWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestFormViewUsesAvailableWidth guards against the add/edit form staying
+// narrow (sized to its content) regardless of a much wider terminal: it must
+// stretch to fill the width, the same way the table view does, and never
+// overflow it.
+func TestFormViewUsesAvailableWidth(t *testing.T) {
+	for _, w := range []int{40, 80, 120} {
+		m := newModel("/tmp/x.yaml", testConfig())
+		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
+		m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}) // open edit form
+		if m.mode != modeForm {
+			t.Fatalf("width=%d: want modeForm, got %d", w, m.mode)
+		}
+		got := lipgloss.Width(m.View())
+		if got > w {
+			t.Errorf("width=%d: form view renders %d cols, overflow %d", w, got, got-w)
+		}
+		if got < w-2 {
+			t.Errorf("width=%d: form view renders only %d cols, not using available width", w, got)
+		}
+	}
+}

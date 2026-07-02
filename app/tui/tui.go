@@ -26,6 +26,7 @@ type model struct {
 	form        formModel
 	confirmName string // populated in confirm mode
 	err         error
+	width       int // last known terminal width, for sizing the form's border
 }
 
 // Run loads the config at path and starts the interactive TUI.
@@ -73,6 +74,8 @@ func (m *model) refreshRows() {
 // title/help/border/padding chrome, and the two root columns share the width
 // left over after the fixed-width Name column.
 func (m *model) resize(ws tea.WindowSizeMsg) {
+	m.width = ws.Width
+
 	const chrome = 8 // title + blank lines + help + border + app padding
 	height := ws.Height - chrome
 	if height < 3 {
@@ -93,6 +96,8 @@ func (m *model) resize(ws tea.WindowSizeMsg) {
 		{Title: "Remote Root", Width: rootW},
 		{Title: "Local Root", Width: rootW},
 	})
+
+	m.form.setWidth(m.width)
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -152,6 +157,7 @@ func (m model) selectedName() (string, bool) {
 
 func (m model) openForm(origName string, p config.Profile) (tea.Model, tea.Cmd) {
 	m.form = newForm(origName, p)
+	m.form.setWidth(m.width)
 	m.mode = modeForm
 	return m, textinput.Blink
 }

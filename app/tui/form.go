@@ -13,6 +13,7 @@ type formModel struct {
 	focus    int
 	origName string // "" for add; the existing name for edit
 	err      string
+	width    int // terminal width last passed to setWidth
 }
 
 func newForm(origName string, p config.Profile) formModel {
@@ -39,6 +40,33 @@ func newForm(origName string, p config.Profile) formModel {
 
 func (f *formModel) focusNext() tea.Cmd { return f.setFocus(f.focus + 1) }
 func (f *formModel) focusPrev() tea.Cmd { return f.setFocus(f.focus - 1) }
+
+// setWidth records the terminal width and stretches every input to fill the
+// bordered box (see formContentWidth), so the form uses the available width
+// instead of sizing to its content.
+func (f *formModel) setWidth(w int) {
+	f.width = w
+	// Each input line is the "> " prompt (2 cols) plus the value area; the
+	// bordered box also reserves 1 column of padding on each side.
+	inputW := formContentWidth(w) - 4
+	if inputW < 10 {
+		inputW = 10
+	}
+	for i := range f.inputs {
+		f.inputs[i].Width = inputW
+	}
+}
+
+// formContentWidth returns the width to pass to the form's border style so
+// the full view (title + border + help, inside appStyle) fills the terminal.
+// Chrome: appStyle padding (4) + thick border (2) = 6.
+func formContentWidth(termWidth int) int {
+	w := termWidth - 6
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
 
 func (f *formModel) setFocus(i int) tea.Cmd {
 	n := len(f.inputs)
@@ -90,8 +118,14 @@ func (f formModel) View() string {
 		content.WriteString(errStyle.Render(f.err))
 	}
 
-	body := titleStyle.Render(title) + "\n\n" +
-		borderStyle.Padding(0, 1).Render(content.String()) + "\n\n" +
-		helpStyle.Render("tab: next • enter: save • esc: cancel")
+	contentW := formContentWidth(f.width)
+	exteriorW := contentW + 2 // + the thick border's own left/right columns
+	box := borderStyle.Padding(0, 1).Width(contentW).Render(content.String())
+
+	// Cap title/help to the box's exterior width too: unconstrained, either
+	// line's natural length can exceed a narrow box and make appStyle size
+	// the whole view to that line instead, overflowing the terminal.
+	body := titleStyle.Width(exteriorW).Render(title) + "\n\n" + box + "\n\n" +
+		helpStyle.Width(exteriorW).Render("tab: next • enter: save • esc: cancel")
 	return appStyle.Render(body)
 }
