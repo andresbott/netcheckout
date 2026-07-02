@@ -38,6 +38,30 @@ archives:
       - LICENSE
       - README.md
 
+homebrew_casks:
+  # publish a macOS cask into this same repo (Casks/netcheckout.rb).
+  # linux is distributed as a .deb, so a macOS-only cask is fine — and it's the
+  # non-deprecated successor to `brews`. the default GITHUB_TOKEN can push here.
+  - name: netcheckout
+    binaries:
+      - netcheckout
+    repository:
+      owner: andresbott
+      name: netcheckout
+    directory: Casks
+    homepage: "https://github.com/andresbott/netcheckout"
+    description: "CLI to check out/in work directories over network drives via rsync"
+    dependencies:
+      - formula: rsync
+    # the darwin binary isn't code-signed/notarized, so strip the Gatekeeper
+    # quarantine attribute on install to avoid a "netcheckout is damaged" error.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/netcheckout"]
+          end
+
 checksum:
   name_template: 'checksums.txt'
 snapshot:
