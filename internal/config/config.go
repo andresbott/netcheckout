@@ -69,3 +69,16 @@ func Save(path string, cfg *Config) error {
 	}
 	return os.Rename(tmpName, path)
 }
+
+// DefaultPath returns the config file location: $NETCHECKOUT_CONFIG if set,
+// otherwise the OS config directory + netcheckout/config.yaml.
+func DefaultPath() (string, error) {
+	if p := os.Getenv("NETCHECKOUT_CONFIG"); p != "" {
+		return p, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "netcheckout", "config.yaml"), nil
+}

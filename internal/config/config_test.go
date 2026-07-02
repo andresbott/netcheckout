@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
@@ -95,5 +96,28 @@ func TestSaveFileMode(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestDefaultPathEnvOverride(t *testing.T) {
+	t.Setenv("NETCHECKOUT_CONFIG", "/custom/path.yaml")
+	got, err := config.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/custom/path.yaml" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestDefaultPathFallback(t *testing.T) {
+	t.Setenv("NETCHECKOUT_CONFIG", "")
+	got, err := config.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("netcheckout", "config.yaml")
+	if !strings.HasSuffix(got, want) {
+		t.Fatalf("got %q, want suffix %q", got, want)
 	}
 }
