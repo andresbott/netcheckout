@@ -68,28 +68,30 @@ These four choices shape the whole design. Defaults below are proposed; see
 
 ## 4. Configuration
 
-**Location** _(proposed)_: `~/.config/netcheckout/config.json`
-(overridable via `--config <path>` or `$NETCHECKOUT_CONFIG`).
+**Location**: YAML file at `os.UserConfigDir()/netcheckout/config.yaml`:
+
+| OS | Path |
+|---|---|
+| Linux | `~/.config/netcheckout/config.yaml` |
+| macOS | `~/Library/Application Support/netcheckout/config.yaml` |
+| Windows | `%AppData%\netcheckout\config.yaml` |
+
+Overridable via `--config <path>` or `$NETCHECKOUT_CONFIG`.
 
 **Schema:**
 
-```jsonc
-{
-  // Who you are. Stamped into markers. If omitted, defaults to "$USER@$HOSTNAME".
-  "identity": "andres@thinkpad",
+```yaml
+# Who you are. Stamped into markers. If omitted, defaults to "$USER@$HOSTNAME".
+identity: andres@thinkpad
 
-  // Named profiles. Each is one local root + one remote root.
-  "profiles": {
-    "photos": {
-      "local_root":  "/home/bott/pics",
-      "remote_root": "/mnt/smb/fotos/2025"
-    },
-    "work": {
-      "local_root":  "/home/bott/work",
-      "remote_root": "/mnt/nas/work"
-    }
-  }
-}
+# Named profiles. Each is one local root + one remote root.
+profiles:
+  photos:
+    local_root:  /home/bott/pics
+    remote_root: /mnt/smb/fotos/2025
+  work:
+    local_root:  /home/bott/work
+    remote_root: /mnt/nas/work
 ```
 
 **Rules:**
@@ -137,7 +139,8 @@ is a convenience/cache and is reconciled against markers on `status`.
 
 | Command | Description |
 |---|---|
-| `netcheckout list` | List configured profiles and their roots. |
+| `netcheckout` | Launch the interactive TUI to manage profiles (add/edit/delete). Prints the plain-text profile list instead when stdout isn't a terminal (e.g. piped). |
+| `netcheckout list` | Print configured profiles and their roots as plain text. |
 | `netcheckout status [profile]` | Show active checkouts (local state ⨉ remote markers), flag conflicts/stale locks. |
 | `netcheckout checkout <profile> [relpath]` | Copy `remote→local` (remote unchanged), write marker. |
 | `netcheckout checkin  <profile> [relpath]` | Push `local→remote`, remove marker. |
@@ -225,7 +228,7 @@ For `checkin <profile> <relpath>`:
 
 1. **Language** — confirm Go.
 2. **Marker filename** — `.netcheckout.json` vs `.CHECKED_OUT` vs other.
-3. **Config location** — `~/.config/netcheckout/config.json` vs `~/.netcheckout.json`.
+3. ~~**Config location**~~ — **Resolved:** YAML at the OS config dir (`os.UserConfigDir()/netcheckout/config.yaml`; see §4).
 4. **Local state** — keep a local state cache, or rely solely on remote markers?
 5. **Nested checkouts** — rule when a parent/child of an already-checked-out path is requested.
 6. **Check-in `--delete`** — should check-in mirror local deletions to the remote (rsync `--delete`), or only add/update?
