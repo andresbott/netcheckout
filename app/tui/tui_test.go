@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
@@ -68,6 +69,20 @@ func TestEditOpensPrefilledForm(t *testing.T) {
 	}
 	if p.LocalRoot != "/l/a" || p.RemoteRoot != "/r/a" {
 		t.Fatalf("want roots /l/a,/r/a, got %q,%q", p.LocalRoot, p.RemoteRoot)
+	}
+}
+
+// TestEnterOpensCheckoutView covers the enter-key remap: pressing enter on the
+// table opens the checkout placeholder view for the selected profile, while
+// "e" (tested by TestEditOpensPrefilledForm) remains the only way to edit.
+func TestEnterOpensCheckoutView(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // "alpha" sorts first
+	if m.mode != modeCheckout {
+		t.Fatalf("want modeCheckout after enter, got %d", m.mode)
+	}
+	if m.checkoutProfile != "alpha" {
+		t.Fatalf("want checkoutProfile alpha, got %q", m.checkoutProfile)
 	}
 }
 
@@ -146,6 +161,36 @@ func TestFormViewUsesAvailableWidth(t *testing.T) {
 		}
 		if got < w-2 {
 			t.Errorf("width=%d: form view renders only %d cols, not using available width", w, got)
+		}
+	}
+}
+
+// TestCheckoutViewHasBorder guards visual consistency with the table/form
+// views: the checkout placeholder must render inside the same thick border.
+func TestCheckoutViewHasBorder(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if view := m.View(); !strings.Contains(view, "┏") || !strings.Contains(view, "┛") {
+		t.Fatalf("checkout view missing thick border corners:\n%s", view)
+	}
+}
+
+// TestCheckoutViewUsesAvailableWidth mirrors TestFormViewUsesAvailableWidth:
+// the checkout view must stretch to the terminal width, not stay content-sized.
+func TestCheckoutViewUsesAvailableWidth(t *testing.T) {
+	for _, w := range []int{40, 80, 120} {
+		m := newModel("/tmp/x.yaml", testConfig())
+		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
+		m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		if m.mode != modeCheckout {
+			t.Fatalf("width=%d: want modeCheckout, got %d", w, m.mode)
+		}
+		got := lipgloss.Width(m.View())
+		if got > w {
+			t.Errorf("width=%d: checkout view renders %d cols, overflow %d", w, got, got-w)
+		}
+		if got < w-2 {
+			t.Errorf("width=%d: checkout view renders only %d cols, not using available width", w, got)
 		}
 	}
 }

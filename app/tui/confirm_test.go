@@ -52,8 +52,8 @@ func TestDeleteCancelled(t *testing.T) {
 }
 
 // TestDeleteEnterDoesNotConfirm locks in spec §8: only y/Y confirms a delete.
-// enter is edit's key in list mode; treating it as confirm here would be an
-// accidental-delete footgun.
+// enter opens the checkout view in table mode; treating it as confirm here
+// would be an accidental-delete footgun.
 func TestDeleteEnterDoesNotConfirm(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &config.Config{Profiles: map[string]config.Profile{

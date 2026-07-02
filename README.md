@@ -45,7 +45,8 @@ Running `netcheckout` with no arguments opens an interactive TUI for managing pr
 (a profile is a named `local_root` / `remote_root` pair):
 
 - `a` — add a profile
-- `e` / `enter` — edit the selected profile
+- `e` — edit the selected profile
+- `enter` — open the checkout/sync/check-in view for the selected profile (placeholder for now)
 - `d` — delete the selected profile (with confirmation)
 - `q` — quit
 

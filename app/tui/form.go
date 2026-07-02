@@ -42,30 +42,19 @@ func (f *formModel) focusNext() tea.Cmd { return f.setFocus(f.focus + 1) }
 func (f *formModel) focusPrev() tea.Cmd { return f.setFocus(f.focus - 1) }
 
 // setWidth records the terminal width and stretches every input to fill the
-// bordered box (see formContentWidth), so the form uses the available width
-// instead of sizing to its content.
+// bordered box (see boxContentWidth in styles.go), so the form uses the
+// available width instead of sizing to its content.
 func (f *formModel) setWidth(w int) {
 	f.width = w
 	// Each input line is the "> " prompt (2 cols) plus the value area; the
 	// bordered box also reserves 1 column of padding on each side.
-	inputW := formContentWidth(w) - 4
+	inputW := boxContentWidth(w) - 4
 	if inputW < 10 {
 		inputW = 10
 	}
 	for i := range f.inputs {
 		f.inputs[i].Width = inputW
 	}
-}
-
-// formContentWidth returns the width to pass to the form's border style so
-// the full view (title + border + help, inside appStyle) fills the terminal.
-// Chrome: appStyle padding (4) + thick border (2) = 6.
-func formContentWidth(termWidth int) int {
-	w := termWidth - 6
-	if w < 20 {
-		w = 20
-	}
-	return w
 }
 
 func (f *formModel) setFocus(i int) tea.Cmd {
@@ -118,7 +107,7 @@ func (f formModel) View() string {
 		content.WriteString(errStyle.Render(f.err))
 	}
 
-	contentW := formContentWidth(f.width)
+	contentW := boxContentWidth(f.width)
 	exteriorW := contentW + 2 // + the thick border's own left/right columns
 	box := borderStyle.Padding(0, 1).Width(contentW).Render(content.String())
 

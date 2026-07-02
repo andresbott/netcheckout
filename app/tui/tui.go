@@ -16,17 +16,19 @@ const (
 	modeTable   mode = iota
 	modeForm         // wired in Task 8
 	modeConfirm      // wired in Task 9
+	modeCheckout
 )
 
 type model struct {
-	path        string
-	cfg         *config.Config
-	mode        mode
-	table       table.Model
-	form        formModel
-	confirmName string // populated in confirm mode
-	err         error
-	width       int // last known terminal width, for sizing the form's border
+	path            string
+	cfg             *config.Config
+	mode            mode
+	table           table.Model
+	form            formModel
+	confirmName     string // populated in confirm mode
+	checkoutProfile string // populated when opening the checkout view
+	err             error
+	width           int // last known terminal width, for sizing the form's border
 }
 
 // Run loads the config at path and starts the interactive TUI.
@@ -115,6 +117,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateForm(msg)
 	case modeConfirm:
 		return m.updateConfirm(msg)
+	case modeCheckout:
+		return m.updateCheckout(msg)
 	default:
 		return m.updateTable(msg)
 	}
@@ -127,9 +131,15 @@ func (m model) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "a":
 			return m.openForm("", config.Profile{})
-		case "e", "enter":
+		case "e":
 			if name, ok := m.selectedName(); ok {
 				return m.openForm(name, m.cfg.Profiles[name])
+			}
+			return m, nil
+		case "enter":
+			if name, ok := m.selectedName(); ok {
+				m.checkoutProfile = name
+				m.mode = modeCheckout
 			}
 			return m, nil
 		case "d":
@@ -251,10 +261,43 @@ func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateCheckout handles the checkout placeholder view: esc returns to the
+// table; every other key (besides the global ctrl+c handled in Update) is a
+// no-op, since there are no actions here yet.
+func (m model) updateCheckout(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	if key.String() == "esc" {
+		m.mode = modeTable
+	}
+	return m, nil
+}
+
 func (m model) confirmView() string {
 	body := titleStyle.Render("Delete profile") + "\n\n" +
 		"Delete profile \"" + m.confirmName + "\"?\n\n" +
 		helpStyle.Render("y: delete • n/esc: cancel")
+	return appStyle.Render(body)
+}
+
+// checkoutView is a placeholder for the checkout/sync/check-in feature
+// described in GOALS.md: it shows the selected profile's roots but performs
+// no file operations yet.
+func (m model) checkoutView() string {
+	p := m.cfg.Profiles[m.checkoutProfile]
+
+	content := labelStyle.Render(fmt.Sprintf("%-13s", "Local root")) + p.LocalRoot + "\n" +
+		labelStyle.Render(fmt.Sprintf("%-13s", "Remote root")) + p.RemoteRoot + "\n\n" +
+		"Checkout / sync / check-in coming soon."
+
+	contentW := boxContentWidth(m.width)
+	exteriorW := contentW + 2 // + the thick border's own left/right columns
+	box := borderStyle.Padding(0, 1).Width(contentW).Render(content)
+
+	body := titleStyle.Width(exteriorW).Render(m.checkoutProfile) + "\n\n" + box + "\n\n" +
+		helpStyle.Width(exteriorW).Render("esc: back")
 	return appStyle.Render(body)
 }
 
@@ -282,6 +325,8 @@ func (m model) View() string {
 		return m.form.View()
 	case modeConfirm:
 		return m.confirmView()
+	case modeCheckout:
+		return m.checkoutView()
 	default:
 		return m.tableView()
 	}
