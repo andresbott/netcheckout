@@ -46,3 +46,20 @@ func TestLoadMalformedYAMLErrors(t *testing.T) {
 		t.Fatal("expected parse error, got nil")
 	}
 }
+
+func TestLoadValidNoProfilesKey(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("identity: me@host\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Profiles == nil {
+		t.Fatal("Profiles should be non-nil after loading YAML without a profiles key")
+	}
+	if len(cfg.Profiles) != 0 {
+		t.Fatalf("Profiles should be empty, got %d entries", len(cfg.Profiles))
+	}
+}
