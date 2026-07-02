@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -30,6 +31,17 @@ func TestNewModelBuildsRows(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	if len(m.table.Rows()) != 2 {
 		t.Fatalf("want 2 rows, got %d", len(m.table.Rows()))
+	}
+}
+
+// TestRowColumnOrder locks in Name / Remote Root / Local Root as the column
+// order, so a future edit can't silently swap the two root columns back.
+func TestRowColumnOrder(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	row := m.table.Rows()[0] // "alpha" sorts first
+	want := table.Row{"alpha", "/r/a", "/l/a"}
+	if row[0] != want[0] || row[1] != want[1] || row[2] != want[2] {
+		t.Fatalf("want row %v, got %v", want, row)
 	}
 }
 

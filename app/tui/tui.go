@@ -43,8 +43,8 @@ func newModel(path string, cfg *config.Config) model {
 	t := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "Name", Width: 16},
-			{Title: "Local Root", Width: 24},
 			{Title: "Remote Root", Width: 24},
+			{Title: "Local Root", Width: 24},
 		}),
 		table.WithFocused(true),
 		table.WithHeight(20),
@@ -64,7 +64,7 @@ func (m *model) refreshRows() {
 	rows := make([]table.Row, 0, len(names))
 	for _, name := range names {
 		p := m.cfg.Profiles[name]
-		rows = append(rows, table.Row{name, p.LocalRoot, p.RemoteRoot})
+		rows = append(rows, table.Row{name, p.RemoteRoot, p.LocalRoot})
 	}
 	m.table.SetRows(rows)
 }
@@ -90,8 +90,8 @@ func (m *model) resize(ws tea.WindowSizeMsg) {
 	}
 	m.table.SetColumns([]table.Column{
 		{Title: "Name", Width: nameW},
-		{Title: "Local Root", Width: rootW},
 		{Title: "Remote Root", Width: rootW},
+		{Title: "Local Root", Width: rootW},
 	})
 }
 
