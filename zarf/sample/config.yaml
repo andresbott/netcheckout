@@ -1,0 +1,22 @@
+# Sample netcheckout configuration with two profiles.
+#
+# A profile is a named pair of roots: a fast LOCAL working copy and the
+# canonical REMOTE root on a mounted network share. Roots must be ABSOLUTE
+# paths (a leading ~ and $ENV vars are expanded when the tool uses them).
+#
+# The paths below point at the example folders shipped next to this file
+# (zarf/sample/<profile>/{local,remote}). Replace the "/path/to/netcheckout"
+# prefix with the absolute path to your checkout, then try:
+#
+#   netcheckout --config zarf/sample/config.yaml list
+#
+# "identity" is stamped into checkout markers so others know who holds a folder.
+identity: alice@thinkpad
+
+profiles:
+  photos:
+    local_root: /path/to/netcheckout/zarf/sample/photos/local
+    remote_root: /path/to/netcheckout/zarf/sample/photos/remote
+  work:
+    local_root: /path/to/netcheckout/zarf/sample/work/local
+    remote_root: /path/to/netcheckout/zarf/sample/work/remote
