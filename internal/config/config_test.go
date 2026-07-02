@@ -63,3 +63,37 @@ func TestLoadValidNoProfilesKey(t *testing.T) {
 		t.Fatalf("Profiles should be empty, got %d entries", len(cfg.Profiles))
 	}
 }
+
+func TestSaveRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "nested", "config.yaml")
+	in := &config.Config{
+		Identity: "me@host",
+		Profiles: map[string]config.Profile{
+			"work": {LocalRoot: "/home/me/work", RemoteRoot: "/mnt/nas/work"},
+		},
+	}
+	if err := config.Save(p, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Identity != in.Identity || out.Profiles["work"] != in.Profiles["work"] {
+		t.Fatalf("round trip mismatch: %#v", out)
+	}
+}
+
+func TestSaveFileMode(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := config.Save(p, &config.Config{Profiles: map[string]config.Profile{}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}

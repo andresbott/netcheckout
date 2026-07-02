@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,4 +38,34 @@ func Load(path string) (*Config, error) {
 		cfg.Profiles = map[string]Profile{}
 	}
 	return &cfg, nil
+}
+
+// Save writes cfg to path atomically (temp file + rename). Parent directories are
+// created with mode 0700 and the resulting file has mode 0600.
+func Save(path string, cfg *Config) error {
+	if cfg.Profiles == nil {
+		cfg.Profiles = map[string]Profile{}
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".netcheckout-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
