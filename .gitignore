@@ -1,0 +1,35 @@
+# ---> Go
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+.directory
+
+# Test binary, built with `go test -c`
+*.test
+*.cover.out
+coverage.out
+*.report
+*.html
+
+# IDE shenanigans
+*.iml
+.idea/
+
+# build output
+dist/
+# local build of the binary
+/netcheckout
+
+# local env (secrets, API keys)
+.env
+
+# editor backup files
+*~
+
+# AI stuff
+.playwright-mcp/
+docs/superpowers
+.superpowers
