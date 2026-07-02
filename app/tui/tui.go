@@ -5,7 +5,7 @@ import (
 	"sort"
 
 	"github.com/andresbott/netcheckout/internal/config"
-	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -13,7 +13,7 @@ import (
 type mode int
 
 const (
-	modeList    mode = iota
+	modeTable   mode = iota
 	modeForm         // wired in Task 8
 	modeConfirm      // wired in Task 9
 )
@@ -22,9 +22,9 @@ type model struct {
 	path        string
 	cfg         *config.Config
 	mode        mode
-	list        list.Model
+	table       table.Model
 	form        formModel
-	confirmName string // populated in confirm mode (Task 9)
+	confirmName string // populated in confirm mode
 	err         error
 }
 
@@ -40,26 +40,57 @@ func Run(path string) error {
 }
 
 func newModel(path string, cfg *config.Config) model {
-	l := list.New(nil, list.NewDefaultDelegate(), 80, 20)
-	l.Title = "Profiles"
-	l.SetFilteringEnabled(false)
-	m := model{path: path, cfg: cfg, list: l, mode: modeList}
-	m.refreshList()
+	t := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "Name", Width: 16},
+			{Title: "Local Root", Width: 24},
+			{Title: "Remote Root", Width: 24},
+		}),
+		table.WithFocused(true),
+		table.WithHeight(20),
+	)
+	t.SetStyles(table.DefaultStyles())
+	m := model{path: path, cfg: cfg, table: t, mode: modeTable}
+	m.refreshRows()
 	return m
 }
 
-func (m *model) refreshList() {
+func (m *model) refreshRows() {
 	names := make([]string, 0, len(m.cfg.Profiles))
 	for name := range m.cfg.Profiles {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	items := make([]list.Item, 0, len(names))
+	rows := make([]table.Row, 0, len(names))
 	for _, name := range names {
 		p := m.cfg.Profiles[name]
-		items = append(items, profileItem{name: name, local: p.LocalRoot, remote: p.RemoteRoot})
+		rows = append(rows, table.Row{name, p.LocalRoot, p.RemoteRoot})
 	}
-	m.list.SetItems(items)
+	m.table.SetRows(rows)
+}
+
+// resize fits the table to the terminal: height fills the screen minus the
+// title/help/border/padding chrome, and the two root columns share the width
+// left over after the fixed-width Name column.
+func (m *model) resize(ws tea.WindowSizeMsg) {
+	const chrome = 8 // title + blank lines + help + border + app padding
+	height := ws.Height - chrome
+	if height < 3 {
+		height = 3
+	}
+	m.table.SetHeight(height)
+
+	const nameW = 16
+	usable := ws.Width - 6 // app padding (4) + border (2)
+	rootW := (usable - nameW) / 2
+	if rootW < 12 {
+		rootW = 12
+	}
+	m.table.SetColumns([]table.Column{
+		{Title: "Name", Width: nameW},
+		{Title: "Local Root", Width: rootW},
+		{Title: "Remote Root", Width: rootW},
+	})
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -69,7 +100,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
-		m.list.SetSize(ws.Width, ws.Height)
+		m.resize(ws)
 		return m, nil
 	}
 	switch m.mode {
@@ -78,11 +109,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modeConfirm:
 		return m.updateConfirm(msg)
 	default:
-		return m.updateList(msg)
+		return m.updateTable(msg)
 	}
 }
 
-func (m model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m model) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {
 		case "q", "esc":
@@ -90,21 +121,31 @@ func (m model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			return m.openForm("", config.Profile{})
 		case "e", "enter":
-			if it, ok := m.list.SelectedItem().(profileItem); ok {
-				return m.openForm(it.name, config.Profile{LocalRoot: it.local, RemoteRoot: it.remote})
+			if name, ok := m.selectedName(); ok {
+				return m.openForm(name, m.cfg.Profiles[name])
 			}
 			return m, nil
 		case "d":
-			if it, ok := m.list.SelectedItem().(profileItem); ok {
-				m.confirmName = it.name
+			if name, ok := m.selectedName(); ok {
+				m.confirmName = name
 				m.mode = modeConfirm
 			}
 			return m, nil
 		}
 	}
 	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
+	m.table, cmd = m.table.Update(msg)
 	return m, cmd
+}
+
+// selectedName returns the profile name for the highlighted row, or false when
+// the table is empty.
+func (m model) selectedName() (string, bool) {
+	row := m.table.SelectedRow()
+	if row == nil {
+		return "", false
+	}
+	return row[0], true
 }
 
 func (m model) openForm(origName string, p config.Profile) (tea.Model, tea.Cmd) {
@@ -122,7 +163,7 @@ func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "esc":
-		m.mode = modeList
+		m.mode = modeTable
 		return m, nil
 	case "enter":
 		return m.submitForm()
@@ -151,8 +192,8 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 		m.form.err = "save failed: " + err.Error()
 		return m, nil
 	}
-	m.refreshList()
-	m.mode = modeList
+	m.refreshRows()
+	m.mode = modeTable
 	m.err = nil
 	return m, nil
 }
@@ -188,15 +229,15 @@ func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.cfg.Profiles, m.confirmName)
 		if err := commitProfiles(m.path, m.cfg, prev); err != nil {
 			m.err = err
-			m.mode = modeList
+			m.mode = modeTable
 			return m, nil
 		}
-		m.refreshList()
-		m.mode = modeList
+		m.refreshRows()
+		m.mode = modeTable
 		m.err = nil
 		return m, nil
 	case "n", "N", "esc":
-		m.mode = modeList
+		m.mode = modeTable
 		return m, nil
 	}
 	return m, nil
@@ -234,13 +275,16 @@ func (m model) View() string {
 	case modeConfirm:
 		return m.confirmView()
 	default:
-		return m.listView()
+		return m.tableView()
 	}
 }
 
-func (m model) listView() string {
+func (m model) tableView() string {
+	body := titleStyle.Render("Profiles") + "\n\n" +
+		tableBorderStyle.Render(m.table.View()) + "\n\n" +
+		helpStyle.Render("a add • e edit • d delete • q quit")
 	if m.err != nil {
-		return m.list.View() + "\n" + errStyle.Render("save failed: "+m.err.Error())
+		body += "\n" + errStyle.Render("save failed: "+m.err.Error())
 	}
-	return m.list.View()
+	return appStyle.Render(body)
 }

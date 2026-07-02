@@ -25,18 +25,36 @@ func update(t *testing.T, m model, msg tea.Msg) model {
 	return got
 }
 
-func TestNewModelBuildsItems(t *testing.T) {
+func TestNewModelBuildsRows(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
-	if len(m.list.Items()) != 2 {
-		t.Fatalf("want 2 items, got %d", len(m.list.Items()))
+	if len(m.table.Rows()) != 2 {
+		t.Fatalf("want 2 rows, got %d", len(m.table.Rows()))
 	}
 }
 
-func TestListNavigation(t *testing.T) {
+func TestTableNavigation(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if m.list.Index() != 1 {
-		t.Fatalf("want index 1 after down, got %d", m.list.Index())
+	if m.table.Cursor() != 1 {
+		t.Fatalf("want cursor 1 after down, got %d", m.table.Cursor())
+	}
+}
+
+// TestEditOpensPrefilledForm covers the selected-row -> profile lookup path:
+// "alpha" sorts first, so the initial cursor selects it, and pressing "e" must
+// open the form pre-filled with that profile.
+func TestEditOpensPrefilledForm(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if m.mode != modeForm {
+		t.Fatalf("want modeForm after e, got %d", m.mode)
+	}
+	name, p := m.form.values()
+	if name != "alpha" {
+		t.Fatalf("want form name alpha, got %q", name)
+	}
+	if p.LocalRoot != "/l/a" || p.RemoteRoot != "/r/a" {
+		t.Fatalf("want roots /l/a,/r/a, got %q,%q", p.LocalRoot, p.RemoteRoot)
 	}
 }
 

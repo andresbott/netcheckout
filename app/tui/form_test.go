@@ -29,8 +29,8 @@ func TestAddProfilePersists(t *testing.T) {
 	m = typeRunes(t, m, "/mnt/nas/pics")
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // submit
 
-	if m.mode != modeList {
-		t.Fatalf("want modeList after save, got %d", m.mode)
+	if m.mode != modeTable {
+		t.Fatalf("want modeTable after save, got %d", m.mode)
 	}
 	saved, err := config.Load(p)
 	if err != nil {
@@ -81,7 +81,7 @@ func TestFormCancel(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.mode != modeList {
+	if m.mode != modeTable {
 		t.Fatal("esc should return to the list")
 	}
 }
