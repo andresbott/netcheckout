@@ -6,6 +6,7 @@ import (
 
 	"github.com/andresbott/netcheckout/internal/config"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func testConfig() *config.Config {
@@ -99,5 +100,18 @@ func TestListViewNotEmpty(t *testing.T) {
 	m := newModel(filepath.Join(t.TempDir(), "x.yaml"), testConfig())
 	if m.View() == "" {
 		t.Fatal("list view should not be empty")
+	}
+}
+
+// TestViewFitsWindowWidth guards against the table overflowing the terminal:
+// after a resize, the rendered view (thick border included) must fit within
+// the reported width, otherwise the right border is pushed off-screen.
+func TestViewFitsWindowWidth(t *testing.T) {
+	for _, w := range []int{80, 100, 120} {
+		m := newModel("/tmp/x.yaml", testConfig())
+		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
+		if got := lipgloss.Width(m.View()); got > w {
+			t.Errorf("width=%d: view renders %d cols, overflow %d", w, got, got-w)
+		}
 	}
 }

@@ -81,7 +81,9 @@ func (m *model) resize(ws tea.WindowSizeMsg) {
 	m.table.SetHeight(height)
 
 	const nameW = 16
-	usable := ws.Width - 6 // app padding (4) + border (2)
+	// Horizontal chrome: app padding (4) + thick border (2) + per-column cell
+	// padding from table.DefaultStyles (2 cols x 3 columns = 6).
+	usable := ws.Width - 12
 	rootW := (usable - nameW) / 2
 	if rootW < 12 {
 		rootW = 12
