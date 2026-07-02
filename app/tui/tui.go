@@ -72,6 +72,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeForm:
 		return m.updateForm(msg)
+	case modeConfirm:
+		return m.updateConfirm(msg)
 	default:
 		return m.updateList(msg)
 	}
@@ -87,6 +89,12 @@ func (m model) updateList(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "e", "enter":
 			if it, ok := m.list.SelectedItem().(profileItem); ok {
 				return m.openForm(it.name, config.Profile{LocalRoot: it.local, RemoteRoot: it.remote})
+			}
+			return m, nil
+		case "d":
+			if it, ok := m.list.SelectedItem().(profileItem); ok {
+				m.confirmName = it.name
+				m.mode = modeConfirm
 			}
 			return m, nil
 		}
@@ -149,6 +157,29 @@ func (m model) saveAndList() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "y", "Y", "enter":
+		delete(m.cfg.Profiles, m.confirmName)
+		return m.saveAndList()
+	case "n", "N", "esc":
+		m.mode = modeList
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) confirmView() string {
+	body := titleStyle.Render("Delete profile") + "\n\n" +
+		"Delete profile \"" + m.confirmName + "\"?\n\n" +
+		helpStyle.Render("y: delete • n/esc: cancel")
+	return appStyle.Render(body)
+}
+
 func validateProfile(cfg *config.Config, origName, name string, p config.Profile) error {
 	if err := config.ValidateName(name); err != nil {
 		return err
@@ -168,10 +199,14 @@ func validateProfile(cfg *config.Config, origName, name string, p config.Profile
 }
 
 func (m model) View() string {
-	if m.mode == modeForm {
+	switch m.mode {
+	case modeForm:
 		return m.form.View()
+	case modeConfirm:
+		return m.confirmView()
+	default:
+		return m.listView()
 	}
-	return m.listView()
 }
 
 func (m model) listView() string {
