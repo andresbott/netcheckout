@@ -21,7 +21,7 @@ func overlay(bg, fg string, x, y int) string {
 	fgLines := strings.Split(fg, "\n")
 	for i, fgLine := range fgLines {
 		row := y + i
-		if row >= len(bgLines) {
+		for row >= len(bgLines) {
 			bgLines = append(bgLines, "")
 		}
 		bgLines[row] = overlayLine(bgLines[row], fgLine, x)

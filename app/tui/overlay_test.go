@@ -30,6 +30,13 @@ func TestOverlayPreservesWidthOverStyledBackground(t *testing.T) {
 	}
 }
 
+func TestOverlayBelowBackgroundPads(t *testing.T) {
+	got := overlay("ab", "XY", 0, 2)
+	if got != "ab\n\nXY" {
+		t.Fatalf("overlay below bg = %q, want %q", got, "ab\n\nXY")
+	}
+}
+
 func TestPlaceCenter(t *testing.T) {
 	bg := strings.Join([]string{"........", "........", "........", "........"}, "\n")
 	got := placeCenter(bg, "AA")
