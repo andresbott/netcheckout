@@ -46,8 +46,10 @@ Running `netcheckout` with no arguments opens an interactive TUI for managing pr
 
 - `a` — add a profile
 - `e` — edit the selected profile
-- `enter` — open the checkout/sync/check-in view for the selected profile (placeholder for now)
 - `d` — delete the selected profile (with confirmation)
+- `enter` — focus the Details pane for the selected profile (checkout/sync/check-in coming soon)
+- `tab` — switch focus between the Profiles list and the Details pane
+- `esc` — from the list, quit; from the Details pane, return to the list; in a dialog, cancel it
 - `q` — quit
 
 When stdout isn't a terminal (e.g. piped or redirected), `netcheckout` prints the
