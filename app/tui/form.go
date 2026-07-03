@@ -46,8 +46,8 @@ func (f *formModel) focusPrev() tea.Cmd { return f.setFocus(f.focus - 1) }
 // sensible minimum for narrow terminals.
 func (f formModel) modalWidth() int {
 	w := f.width - 8
-	if w > 60 {
-		w = 60
+	if w > 100 {
+		w = 100
 	}
 	if w < 30 {
 		w = 30
