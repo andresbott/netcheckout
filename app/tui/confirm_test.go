@@ -23,8 +23,8 @@ func TestDeleteConfirmed(t *testing.T) {
 		t.Fatalf("want modeConfirm, got %d", m.mode)
 	}
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	if m.mode != modeTable {
-		t.Fatalf("want modeTable after delete, got %d", m.mode)
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after delete, got %d", m.mode)
 	}
 	if _, exists := m.cfg.Profiles["alpha"]; exists {
 		t.Error("alpha should be deleted")
@@ -43,8 +43,8 @@ func TestDeleteCancelled(t *testing.T) {
 	m := newModel(p, cfg)
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	if m.mode != modeTable {
-		t.Fatalf("want modeTable after cancel, got %d", m.mode)
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after cancel, got %d", m.mode)
 	}
 	if _, exists := m.cfg.Profiles["alpha"]; !exists {
 		t.Error("alpha should still exist after cancel")
@@ -52,8 +52,8 @@ func TestDeleteCancelled(t *testing.T) {
 }
 
 // TestDeleteEnterDoesNotConfirm locks in spec §8: only y/Y confirms a delete.
-// enter opens the checkout view in table mode; treating it as confirm here
-// would be an accidental-delete footgun.
+// enter is ignored in confirm mode, so it can't become an accidental-delete
+// footgun.
 func TestDeleteEnterDoesNotConfirm(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &config.Config{Profiles: map[string]config.Profile{
@@ -83,8 +83,8 @@ func TestDeleteSaveFailureKeepsProfile(t *testing.T) {
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 
-	if m.mode != modeTable {
-		t.Fatalf("want modeTable after failed delete save, got %d", m.mode)
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after failed delete save, got %d", m.mode)
 	}
 	if m.err == nil {
 		t.Fatal("expected m.err to be set after a failed save")

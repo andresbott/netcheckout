@@ -6,6 +6,7 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type formModel struct {
@@ -41,16 +42,26 @@ func newForm(origName string, p config.Profile) formModel {
 func (f *formModel) focusNext() tea.Cmd { return f.setFocus(f.focus + 1) }
 func (f *formModel) focusPrev() tea.Cmd { return f.setFocus(f.focus - 1) }
 
-// setWidth records the terminal width and stretches every input to fill the
-// bordered box (see boxContentWidth in styles.go), so the form uses the
-// available width instead of sizing to its content.
+// modalWidth is the form window's total width: capped, and clamped to a
+// sensible minimum for narrow terminals.
+func (f formModel) modalWidth() int {
+	w := f.width - 8
+	if w > 60 {
+		w = 60
+	}
+	if w < 30 {
+		w = 30
+	}
+	return w
+}
+
+// setWidth records the terminal width and sizes each input to the modal's
+// inner content area.
 func (f *formModel) setWidth(w int) {
 	f.width = w
-	// Each input line is the "> " prompt (2 cols) plus the value area; the
-	// bordered box also reserves 1 column of padding on each side.
-	inputW := boxContentWidth(w) - 4
-	if inputW < 10 {
-		inputW = 10
+	inputW := f.modalWidth() - 6 // borders (2) + box padding (2) + prompt "> " (2)
+	if inputW < 6 {
+		inputW = 6
 	}
 	for i := range f.inputs {
 		f.inputs[i].Width = inputW
@@ -96,7 +107,7 @@ func (f formModel) View() string {
 	labels := []string{"Name", "Local root", "Remote root"}
 	for i := range f.inputs {
 		if i > 0 {
-			content.WriteString("\n\n")
+			content.WriteString("\n")
 		}
 		content.WriteString(labelStyle.Render(labels[i]))
 		content.WriteString("\n")
@@ -106,15 +117,9 @@ func (f formModel) View() string {
 		content.WriteString("\n\n")
 		content.WriteString(errStyle.Render(f.err))
 	}
+	content.WriteString("\n\n")
+	content.WriteString(helpTextStyle.Render("tab next · enter save · esc cancel"))
 
-	contentW := boxContentWidth(f.width)
-	exteriorW := contentW + 2 // + the thick border's own left/right columns
-	box := borderStyle.Padding(0, 1).Width(contentW).Render(content.String())
-
-	// Cap title/help to the box's exterior width too: unconstrained, either
-	// line's natural length can exceed a narrow box and make appStyle size
-	// the whole view to that line instead, overflowing the terminal.
-	body := titleStyle.Width(exteriorW).Render(title) + "\n\n" + box + "\n\n" +
-		helpStyle.Width(exteriorW).Render("tab: next • enter: save • esc: cancel")
-	return appStyle.Render(body)
+	body := content.String()
+	return titledBox(title, body, f.modalWidth(), lipgloss.Height(body)+2, true)
 }

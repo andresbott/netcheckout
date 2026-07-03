@@ -10,12 +10,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestFormViewHasBorder guards visual consistency with the table view: the
-// form's labeled inputs must render inside the same thick border.
 func TestFormViewHasBorder(t *testing.T) {
 	f := newForm("photos", config.Profile{LocalRoot: "/l", RemoteRoot: "/r"})
-	if view := f.View(); !strings.Contains(view, "┏") || !strings.Contains(view, "┛") {
-		t.Fatalf("form view missing thick border corners:\n%s", view)
+	f.setWidth(80)
+	if view := f.View(); !strings.Contains(view, "╭") || !strings.Contains(view, "╯") {
+		t.Fatalf("form view missing rounded border corners:\n%s", view)
 	}
 }
 
@@ -39,8 +38,8 @@ func TestAddProfilePersists(t *testing.T) {
 	m = typeRunes(t, m, "/mnt/nas/pics")
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // submit
 
-	if m.mode != modeTable {
-		t.Fatalf("want modeTable after save, got %d", m.mode)
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after save, got %d", m.mode)
 	}
 	saved, err := config.Load(p)
 	if err != nil {
@@ -91,7 +90,7 @@ func TestFormCancel(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
-	if m.mode != modeTable {
+	if m.mode != modeMain {
 		t.Fatal("esc should return to the list")
 	}
 }

@@ -2,11 +2,9 @@ package tui
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -28,29 +26,11 @@ func update(t *testing.T, m model, msg tea.Msg) model {
 	return got
 }
 
-func TestNewModelBuildsRows(t *testing.T) {
-	m := newModel("/tmp/x.yaml", testConfig())
-	if len(m.table.Rows()) != 2 {
-		t.Fatalf("want 2 rows, got %d", len(m.table.Rows()))
-	}
-}
-
-// TestRowColumnOrder locks in Name / Remote Root / Local Root as the column
-// order, so a future edit can't silently swap the two root columns back.
-func TestRowColumnOrder(t *testing.T) {
-	m := newModel("/tmp/x.yaml", testConfig())
-	row := m.table.Rows()[0] // "alpha" sorts first
-	want := table.Row{"alpha", "/r/a", "/l/a"}
-	if row[0] != want[0] || row[1] != want[1] || row[2] != want[2] {
-		t.Fatalf("want row %v, got %v", want, row)
-	}
-}
-
-func TestTableNavigation(t *testing.T) {
+func TestListNavigation(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
-	if m.table.Cursor() != 1 {
-		t.Fatalf("want cursor 1 after down, got %d", m.table.Cursor())
+	if name, _ := m.list.selected(); name != "beta" {
+		t.Fatalf("want beta selected after down, got %q", name)
 	}
 }
 
@@ -72,17 +52,16 @@ func TestEditOpensPrefilledForm(t *testing.T) {
 	}
 }
 
-// TestEnterOpensCheckoutView covers the enter-key remap: pressing enter on the
-// table opens the checkout placeholder view for the selected profile, while
-// "e" (tested by TestEditOpensPrefilledForm) remains the only way to edit.
-func TestEnterOpensCheckoutView(t *testing.T) {
+// TestEnterFocusesDetails: enter no longer swaps to a checkout screen; it moves
+// focus to the Details pane for the selected profile, staying in the main view.
+func TestEnterFocusesDetails(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // "alpha" sorts first
-	if m.mode != modeCheckout {
-		t.Fatalf("want modeCheckout after enter, got %d", m.mode)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after enter, got %d", m.mode)
 	}
-	if m.checkoutProfile != "alpha" {
-		t.Fatalf("want checkoutProfile alpha, got %q", m.checkoutProfile)
+	if m.focus != paneDetails {
+		t.Fatalf("want focus paneDetails after enter, got %d", m.focus)
 	}
 }
 
@@ -143,54 +122,22 @@ func TestViewFitsWindowWidth(t *testing.T) {
 	}
 }
 
-// TestFormViewUsesAvailableWidth guards against the add/edit form staying
-// narrow (sized to its content) regardless of a much wider terminal: it must
-// stretch to fill the width, the same way the table view does, and never
-// overflow it.
-func TestFormViewUsesAvailableWidth(t *testing.T) {
-	for _, w := range []int{40, 80, 120} {
+// TestModalFitsAndIsCentered: the form modal view fills the terminal (it is
+// composited over a full-size canvas) but the modal box itself is narrower than
+// the terminal, i.e. centered rather than full-width.
+func TestModalFitsAndIsCentered(t *testing.T) {
+	for _, w := range []int{60, 100, 120} {
 		m := newModel("/tmp/x.yaml", testConfig())
 		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
-		m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}) // open edit form
+		m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
 		if m.mode != modeForm {
 			t.Fatalf("width=%d: want modeForm, got %d", w, m.mode)
 		}
-		got := lipgloss.Width(m.View())
-		if got > w {
-			t.Errorf("width=%d: form view renders %d cols, overflow %d", w, got, got-w)
+		if got := lipgloss.Width(m.View()); got > w {
+			t.Errorf("width=%d: view renders %d cols, overflow %d", w, got, got-w)
 		}
-		if got < w-2 {
-			t.Errorf("width=%d: form view renders only %d cols, not using available width", w, got)
-		}
-	}
-}
-
-// TestCheckoutViewHasBorder guards visual consistency with the table/form
-// views: the checkout placeholder must render inside the same thick border.
-func TestCheckoutViewHasBorder(t *testing.T) {
-	m := newModel("/tmp/x.yaml", testConfig())
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if view := m.View(); !strings.Contains(view, "┏") || !strings.Contains(view, "┛") {
-		t.Fatalf("checkout view missing thick border corners:\n%s", view)
-	}
-}
-
-// TestCheckoutViewUsesAvailableWidth mirrors TestFormViewUsesAvailableWidth:
-// the checkout view must stretch to the terminal width, not stay content-sized.
-func TestCheckoutViewUsesAvailableWidth(t *testing.T) {
-	for _, w := range []int{40, 80, 120} {
-		m := newModel("/tmp/x.yaml", testConfig())
-		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
-		m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-		if m.mode != modeCheckout {
-			t.Fatalf("width=%d: want modeCheckout, got %d", w, m.mode)
-		}
-		got := lipgloss.Width(m.View())
-		if got > w {
-			t.Errorf("width=%d: checkout view renders %d cols, overflow %d", w, got, got-w)
-		}
-		if got < w-2 {
-			t.Errorf("width=%d: checkout view renders only %d cols, not using available width", w, got)
+		if got := lipgloss.Width(m.form.View()); got >= w {
+			t.Errorf("width=%d: modal box is %d cols, expected narrower (centered)", w, got)
 		}
 	}
 }

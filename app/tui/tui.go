@@ -2,33 +2,44 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
+	"github.com/andresbott/netcheckout/app/metainfo"
 	"github.com/andresbott/netcheckout/internal/config"
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type mode int
 
 const (
-	modeTable   mode = iota
-	modeForm         // wired in Task 8
-	modeConfirm      // wired in Task 9
-	modeCheckout
+	modeMain mode = iota
+	modeForm
+	modeConfirm
+)
+
+type pane int
+
+const (
+	paneList pane = iota
+	paneDetails
 )
 
 type model struct {
-	path            string
-	cfg             *config.Config
-	mode            mode
-	table           table.Model
-	form            formModel
-	confirmName     string // populated in confirm mode
-	checkoutProfile string // populated when opening the checkout view
-	err             error
-	width           int // last known terminal width, for sizing the form's border
+	path        string
+	cfg         *config.Config
+	version     string
+	identity    string
+	width       int
+	height      int
+	focus       pane
+	list        listModel
+	mode        mode
+	form        formModel
+	confirmName string
+	err         error
 }
 
 // Run loads the config at path and starts the interactive TUI.
@@ -43,63 +54,50 @@ func Run(path string) error {
 }
 
 func newModel(path string, cfg *config.Config) model {
-	t := table.New(
-		table.WithColumns([]table.Column{
-			{Title: "Name", Width: 16},
-			{Title: "Remote Root", Width: 24},
-			{Title: "Local Root", Width: 24},
-		}),
-		table.WithFocused(true),
-		table.WithHeight(20),
-	)
-	t.SetStyles(table.DefaultStyles())
-	m := model{path: path, cfg: cfg, table: t, mode: modeTable}
-	m.refreshRows()
+	m := model{
+		path:     path,
+		cfg:      cfg,
+		version:  metainfo.Version,
+		identity: identityString(cfg),
+		mode:     modeMain,
+		focus:    paneList,
+		list:     newList(nil),
+	}
+	m.refreshList()
 	return m
 }
 
-func (m *model) refreshRows() {
+// identityString is the header's right-hand text: the configured identity, or
+// "$USER@$HOSTNAME" as GOALS.md specifies for the default.
+func identityString(cfg *config.Config) string {
+	if cfg.Identity != "" {
+		return cfg.Identity
+	}
+	user := os.Getenv("USER")
+	host, _ := os.Hostname()
+	switch {
+	case user != "" && host != "":
+		return user + "@" + host
+	case host != "":
+		return host
+	default:
+		return "unknown"
+	}
+}
+
+func (m *model) refreshList() {
 	names := make([]string, 0, len(m.cfg.Profiles))
 	for name := range m.cfg.Profiles {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	rows := make([]table.Row, 0, len(names))
-	for _, name := range names {
-		p := m.cfg.Profiles[name]
-		rows = append(rows, table.Row{name, p.RemoteRoot, p.LocalRoot})
-	}
-	m.table.SetRows(rows)
+	m.list.setNames(names)
 }
 
-// resize fits the table to the terminal: height fills the screen minus the
-// title/help/border/padding chrome, and the two root columns share the width
-// left over after the fixed-width Name column.
 func (m *model) resize(ws tea.WindowSizeMsg) {
 	m.width = ws.Width
-
-	const chrome = 8 // title + blank lines + help + border + app padding
-	height := ws.Height - chrome
-	if height < 3 {
-		height = 3
-	}
-	m.table.SetHeight(height)
-
-	const nameW = 16
-	// Horizontal chrome: app padding (4) + thick border (2) + per-column cell
-	// padding from table.DefaultStyles (2 cols x 3 columns = 6).
-	usable := ws.Width - 12
-	rootW := (usable - nameW) / 2
-	if rootW < 12 {
-		rootW = 12
-	}
-	m.table.SetColumns([]table.Column{
-		{Title: "Name", Width: nameW},
-		{Title: "Remote Root", Width: rootW},
-		{Title: "Local Root", Width: rootW},
-	})
-
-	m.form.setWidth(m.width)
+	m.height = ws.Height
+	m.form.setWidth(ws.Width)
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -117,52 +115,62 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateForm(msg)
 	case modeConfirm:
 		return m.updateConfirm(msg)
-	case modeCheckout:
-		return m.updateCheckout(msg)
 	default:
-		return m.updateTable(msg)
+		return m.updateMain(msg)
 	}
 }
 
-func (m model) updateTable(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if key, ok := msg.(tea.KeyMsg); ok {
-		switch key.String() {
-		case "q", "esc":
-			return m, tea.Quit
-		case "a":
-			return m.openForm("", config.Profile{})
-		case "e":
-			if name, ok := m.selectedName(); ok {
-				return m.openForm(name, m.cfg.Profiles[name])
-			}
-			return m, nil
-		case "enter":
-			if name, ok := m.selectedName(); ok {
-				m.checkoutProfile = name
-				m.mode = modeCheckout
-			}
-			return m, nil
-		case "d":
-			if name, ok := m.selectedName(); ok {
-				m.confirmName = name
-				m.mode = modeConfirm
-			}
+func (m model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "q":
+		return m, tea.Quit
+	case "esc":
+		if m.focus == paneDetails {
+			m.focus = paneList
 			return m, nil
 		}
+		return m, tea.Quit
+	case "tab":
+		if m.focus == paneList {
+			m.focus = paneDetails
+		} else {
+			m.focus = paneList
+		}
+		return m, nil
+	case "enter":
+		if _, ok := m.list.selected(); ok {
+			m.focus = paneDetails
+		}
+		return m, nil
+	case "a":
+		return m.openForm("", config.Profile{})
+	case "e":
+		if name, ok := m.list.selected(); ok {
+			return m.openForm(name, m.cfg.Profiles[name])
+		}
+		return m, nil
+	case "d":
+		if name, ok := m.list.selected(); ok {
+			m.confirmName = name
+			m.mode = modeConfirm
+		}
+		return m, nil
+	case "up", "k":
+		if m.focus == paneList {
+			m.list.moveUp()
+		}
+		return m, nil
+	case "down", "j":
+		if m.focus == paneList {
+			m.list.moveDown()
+		}
+		return m, nil
 	}
-	var cmd tea.Cmd
-	m.table, cmd = m.table.Update(msg)
-	return m, cmd
-}
-
-// selectedName returns the profile name for the highlighted row, or false when
-// the table is empty.
-func (m model) selectedName() (string, bool) {
-	row := m.table.SelectedRow()
-	if row == nil {
-		return "", false
-	}
-	return row[0], true
+	return m, nil
 }
 
 func (m model) openForm(origName string, p config.Profile) (tea.Model, tea.Cmd) {
@@ -181,7 +189,7 @@ func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "esc":
-		m.mode = modeTable
+		m.mode = modeMain
 		return m, nil
 	case "enter":
 		return m.submitForm()
@@ -210,8 +218,8 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 		m.form.err = "save failed: " + err.Error()
 		return m, nil
 	}
-	m.refreshRows()
-	m.mode = modeTable
+	m.refreshList()
+	m.mode = modeMain
 	m.err = nil
 	return m, nil
 }
@@ -236,71 +244,6 @@ func commitProfiles(path string, cfg *config.Config, prev map[string]config.Prof
 	return nil
 }
 
-func (m model) updateConfirm(msg tea.Msg) (tea.Model, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-	switch key.String() {
-	case "y", "Y":
-		prev := cloneProfiles(m.cfg.Profiles)
-		delete(m.cfg.Profiles, m.confirmName)
-		if err := commitProfiles(m.path, m.cfg, prev); err != nil {
-			m.err = err
-			m.mode = modeTable
-			return m, nil
-		}
-		m.refreshRows()
-		m.mode = modeTable
-		m.err = nil
-		return m, nil
-	case "n", "N", "esc":
-		m.mode = modeTable
-		return m, nil
-	}
-	return m, nil
-}
-
-// updateCheckout handles the checkout placeholder view: esc returns to the
-// table; every other key (besides the global ctrl+c handled in Update) is a
-// no-op, since there are no actions here yet.
-func (m model) updateCheckout(msg tea.Msg) (tea.Model, tea.Cmd) {
-	key, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-	if key.String() == "esc" {
-		m.mode = modeTable
-	}
-	return m, nil
-}
-
-func (m model) confirmView() string {
-	body := titleStyle.Render("Delete profile") + "\n\n" +
-		"Delete profile \"" + m.confirmName + "\"?\n\n" +
-		helpStyle.Render("y: delete • n/esc: cancel")
-	return appStyle.Render(body)
-}
-
-// checkoutView is a placeholder for the checkout/sync/check-in feature
-// described in GOALS.md: it shows the selected profile's roots but performs
-// no file operations yet.
-func (m model) checkoutView() string {
-	p := m.cfg.Profiles[m.checkoutProfile]
-
-	content := labelStyle.Render(fmt.Sprintf("%-13s", "Local root")) + p.LocalRoot + "\n" +
-		labelStyle.Render(fmt.Sprintf("%-13s", "Remote root")) + p.RemoteRoot + "\n\n" +
-		"Checkout / sync / check-in coming soon."
-
-	contentW := boxContentWidth(m.width)
-	exteriorW := contentW + 2 // + the thick border's own left/right columns
-	box := borderStyle.Padding(0, 1).Width(contentW).Render(content)
-
-	body := titleStyle.Width(exteriorW).Render(m.checkoutProfile) + "\n\n" + box + "\n\n" +
-		helpStyle.Width(exteriorW).Render("esc: back")
-	return appStyle.Render(body)
-}
-
 func validateProfile(cfg *config.Config, origName, name string, p config.Profile) error {
 	if err := config.ValidateName(name); err != nil {
 		return err
@@ -322,22 +265,57 @@ func validateProfile(cfg *config.Config, origName, name string, p config.Profile
 func (m model) View() string {
 	switch m.mode {
 	case modeForm:
-		return m.form.View()
+		return m.overlayModal(m.form.View())
 	case modeConfirm:
-		return m.confirmView()
-	case modeCheckout:
-		return m.checkoutView()
+		return m.overlayModal(confirmModal(m.confirmName))
 	default:
-		return m.tableView()
+		return m.mainView(false)
 	}
 }
 
-func (m model) tableView() string {
-	body := titleStyle.Render("Profiles") + "\n\n" +
-		borderStyle.Render(m.table.View()) + "\n\n" +
-		helpStyle.Render("a add • e edit • d delete • q quit")
-	if m.err != nil {
-		body += "\n" + errStyle.Render("save failed: "+m.err.Error())
+// mainView composes the header, the two panels, and the footer to exactly the
+// terminal size. When dim is true both panels render unfocused (used as the
+// dimmed backdrop behind a modal in Task 6).
+func (m model) mainView(dim bool) string {
+	w, h := m.width, m.height
+	if w == 0 {
+		w, h = 80, 24 // pre-resize fallback so the view is never empty
 	}
-	return appStyle.Render(body)
+	bodyH := h - 2 // header + footer
+	if bodyH < 3 {
+		bodyH = 3
+	}
+	leftW := w / 3
+	if leftW < 16 {
+		leftW = 16
+	}
+	rightW := w - leftW
+
+	listFocused := !dim && m.focus == paneList
+	detailsFocused := !dim && m.focus == paneDetails
+
+	name, _ := m.list.selected()
+	listBody := m.list.view(leftW-2, bodyH-2)
+	detailsBody := renderDetails(name, m.cfg.Profiles[name], rightW-2)
+
+	left := titledBox("Profiles", listBody, leftW, bodyH, listFocused)
+	right := titledBox("Details", detailsBody, rightW, bodyH, detailsFocused)
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+
+	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + renderFooter(w)
+	if m.err != nil {
+		view += "\n" + errStyle.Render("save failed: "+m.err.Error())
+	}
+	return view
+}
+
+// overlayModal centers box over a backdrop the size of the terminal.
+// Task 6 replaces the blank backdrop with the dimmed main view.
+func (m model) overlayModal(box string) string {
+	w, h := m.width, m.height
+	if w == 0 {
+		w, h = 80, 24
+	}
+	backdrop := lipgloss.NewStyle().Width(w).Height(h).Render("")
+	return placeCenter(backdrop, box)
 }
