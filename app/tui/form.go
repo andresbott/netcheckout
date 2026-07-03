@@ -120,6 +120,8 @@ func (f formModel) View() string {
 	content.WriteString("\n\n")
 	content.WriteString(helpTextStyle.Render("tab next · enter save · esc cancel"))
 
-	body := content.String()
+	// Inset the content one column from the border on each side; the input
+	// widths (modalWidth-6) already reserve those two columns.
+	body := lipgloss.NewStyle().Padding(0, 1).Render(content.String())
 	return titledBox(title, body, f.modalWidth(), lipgloss.Height(body)+2, true)
 }
