@@ -40,6 +40,7 @@ var (
 var (
 	titleActiveStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	titleDimStyle    = lipgloss.NewStyle().Foreground(colDim)
+	selectedRowStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 )
 
 // titledBox renders a rounded-border box of exactly width x height cells with
