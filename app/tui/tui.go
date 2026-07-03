@@ -309,13 +309,8 @@ func (m model) mainView(dim bool) string {
 	return view
 }
 
-// overlayModal centers box over a backdrop the size of the terminal.
-// Task 6 replaces the blank backdrop with the dimmed main view.
+// overlayModal renders the main view dimmed (both panels unfocused) and
+// composites box centered over it, so the modal reads as a floating window.
 func (m model) overlayModal(box string) string {
-	w, h := m.width, m.height
-	if w == 0 {
-		w, h = 80, 24
-	}
-	backdrop := lipgloss.NewStyle().Width(w).Height(h).Render("")
-	return placeCenter(backdrop, box)
+	return placeCenter(m.mainView(true), box)
 }

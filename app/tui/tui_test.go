@@ -2,6 +2,7 @@ package tui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
@@ -169,5 +170,29 @@ func TestModalFitsAndIsCentered(t *testing.T) {
 		if got := lipgloss.Width(m.form.View()); got >= w {
 			t.Errorf("width=%d: modal box is %d cols, expected narrower (centered)", w, got)
 		}
+	}
+}
+
+// TestModalFloatsOverMainView: with a modal open, the dimmed main view is still
+// behind it — the other profile's name and the panel titles remain visible.
+func TestModalFloatsOverMainView(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")}) // delete-confirm on "alpha"
+	if m.mode != modeConfirm {
+		t.Fatalf("want modeConfirm, got %d", m.mode)
+	}
+	view := m.View()
+	if !strings.Contains(view, "Profiles") || !strings.Contains(view, "Details") {
+		t.Errorf("panel titles should remain visible behind the modal:\n%s", view)
+	}
+	if !strings.Contains(view, "beta") {
+		t.Errorf("non-selected profile should remain visible behind the modal:\n%s", view)
+	}
+	if !strings.Contains(view, "Confirm delete") {
+		t.Errorf("modal title missing:\n%s", view)
+	}
+	if got := lipgloss.Width(view); got > 100 {
+		t.Errorf("view width %d > 100", got)
 	}
 }
