@@ -35,12 +35,19 @@ func boxContentWidth(termWidth int) int {
 var (
 	colAccent = lipgloss.Color("205") // hot pink: focus border + key hints
 	colDim    = lipgloss.Color("240") // gray: unfocused borders, labels
+	colTitle  = lipgloss.Color("141") // purple: header app name
+	colStatus = lipgloss.Color("42")  // green: section headers
 )
 
 var (
 	titleActiveStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	titleDimStyle    = lipgloss.NewStyle().Foreground(colDim)
 	selectedRowStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	helpKeyStyle     = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	helpTextStyle    = lipgloss.NewStyle().Foreground(colDim)
+	headerAppStyle   = lipgloss.NewStyle().Foreground(colTitle).Bold(true)
+	headerIDStyle    = lipgloss.NewStyle().Foreground(colDim)
+	sectionStyle     = lipgloss.NewStyle().Foreground(colStatus)
 )
 
 // titledBox renders a rounded-border box of exactly width x height cells with
