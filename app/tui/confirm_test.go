@@ -2,10 +2,12 @@ package tui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestDeleteConfirmed(t *testing.T) {
@@ -91,5 +93,21 @@ func TestDeleteSaveFailureKeepsProfile(t *testing.T) {
 	}
 	if _, exists := m.cfg.Profiles["alpha"]; !exists {
 		t.Error("alpha should still exist in memory when the delete save fails")
+	}
+}
+
+func TestConfirmModalFitsWidthWithLongName(t *testing.T) {
+	longName := strings.Repeat("x", 60)
+	cfg := &config.Config{Profiles: map[string]config.Profile{
+		longName: {LocalRoot: "/l", RemoteRoot: "/r"},
+	}}
+	m := newModel("/tmp/x.yaml", cfg)
+	m = update(t, m, tea.WindowSizeMsg{Width: 40, Height: 20})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if m.mode != modeConfirm {
+		t.Fatalf("want modeConfirm, got %d", m.mode)
+	}
+	if got := lipgloss.Width(m.View()); got > 40 {
+		t.Errorf("confirm view width %d > 40; long name should be capped", got)
 	}
 }

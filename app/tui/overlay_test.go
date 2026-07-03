@@ -46,3 +46,15 @@ func TestPlaceCenter(t *testing.T) {
 		t.Fatalf("centered line = %q, want %q", lines[1], "...AA...")
 	}
 }
+
+func TestPlaceCenterForegroundLargerThanBackground(t *testing.T) {
+	bg := "ab\ncd"
+	fg := "WXYZ\nWXYZ\nWXYZ"
+	got := placeCenter(bg, fg) // must not panic; clamps to (0,0)
+	if lipgloss.Width(got) < lipgloss.Width(fg) {
+		t.Fatalf("placeCenter dropped width: got %d, want >= %d", lipgloss.Width(got), lipgloss.Width(fg))
+	}
+	if !strings.Contains(got, "WXYZ") {
+		t.Fatalf("placeCenter lost foreground:\n%s", got)
+	}
+}

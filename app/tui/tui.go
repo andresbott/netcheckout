@@ -267,7 +267,7 @@ func (m model) View() string {
 	case modeForm:
 		return m.overlayModal(m.form.View())
 	case modeConfirm:
-		return m.overlayModal(confirmModal(m.confirmName))
+		return m.overlayModal(confirmModal(m.confirmName, m.width))
 	default:
 		return m.mainView(false)
 	}
