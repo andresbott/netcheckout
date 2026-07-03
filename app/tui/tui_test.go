@@ -65,6 +65,36 @@ func TestEnterFocusesDetails(t *testing.T) {
 	}
 }
 
+func TestTabTogglesFocus(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	if m.focus != paneList {
+		t.Fatalf("initial focus should be paneList, got %d", m.focus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.focus != paneDetails {
+		t.Fatalf("want paneDetails after tab, got %d", m.focus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.focus != paneList {
+		t.Fatalf("want paneList after second tab, got %d", m.focus)
+	}
+}
+
+func TestDetailsEscReturnsToList(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // focus Details
+	if m.focus != paneDetails {
+		t.Fatalf("want paneDetails after enter, got %d", m.focus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // esc from Details returns to the list, does not quit
+	if m.focus != paneList {
+		t.Fatalf("want paneList after esc from details, got %d", m.focus)
+	}
+	if m.mode != modeMain {
+		t.Fatalf("esc from details should stay in main view, got mode %d", m.mode)
+	}
+}
+
 func TestListQuit(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
@@ -109,9 +139,9 @@ func TestListViewNotEmpty(t *testing.T) {
 	}
 }
 
-// TestViewFitsWindowWidth guards against the table overflowing the terminal:
-// after a resize, the rendered view (thick border included) must fit within
-// the reported width, otherwise the right border is pushed off-screen.
+// TestViewFitsWindowWidth guards against the two-pane main view overflowing the
+// terminal: after a resize, the rendered view (both panel borders included) must
+// fit within the reported width, otherwise the right border is pushed off-screen.
 func TestViewFitsWindowWidth(t *testing.T) {
 	for _, w := range []int{80, 100, 120} {
 		m := newModel("/tmp/x.yaml", testConfig())
