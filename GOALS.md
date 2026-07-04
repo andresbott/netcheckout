@@ -35,7 +35,7 @@ own local copy, and a marker tells everyone else you're holding it.
 | **Identity** | A short string in the config identifying *you* (e.g. `andres@thinkpad`). Stamped into every marker so others know who holds a checkout. |
 | **Profile** | A named pair of roots: one **local root** and one **remote root**. |
 | **Root** | A base directory. The **remote root** lives on the mounted network share; the **local root** is on fast local disk. |
-| **Subfolder / relpath** | A path *relative to both roots* selecting what to check out (e.g. `./2025/jan`). `./` (or omitted) means the whole root. |
+| **Subfolder / relpath** | A path *relative to both roots* selecting what to check out (e.g. `./2025/jan`). `./` (or omitted) means the whole root. A profile MAY pre-declare a set of these as `subpaths` (see §4) to scope it. |
 | **Checkout** | **Copy** `remote_root/<relpath>` → `local_root/<relpath>` (remote keeps its files) and place a marker on the remote. |
 | **Check in** | Sync `local_root/<relpath>` → `remote_root/<relpath>` and remove the marker. |
 | **Marker** | A small file left inside the remote subfolder recording who checked it out, from which host, and when. Acts as the lock. |
@@ -57,9 +57,11 @@ These four choices shape the whole design. Defaults below are proposed; see
    the remote to announce the checkout and act as a cooperative lock. Check-in copies
    your working copy back and removes the marker. Nothing is ever moved or deleted off
    the remote, so there is no local-only / data-loss window.
-3. **Selection model: 2 roots + relative path at runtime.** A profile is exactly one
-   `local_root` + one `remote_root`; you pick what to check out by passing a relative
-   path on the command line. No need to pre-declare every subfolder in config.
+3. **Selection model: 2 roots + relative path, with optional declared scope.** A profile
+   is one `local_root` + one `remote_root`. You pick what to check out by passing a
+   relative path at runtime; a profile MAY additionally declare a `subpaths` list (see §4)
+   that scopes it to just those relpaths. When no `subpaths` are declared the whole root is
+   in scope, so pre-declaration stays optional.
 4. **Lock conflicts: block others, allow your own.** If a marker already exists and
    belongs to *someone else's* identity, the checkout is refused. If it's *your own*
    (e.g. a stale lock from another machine), it's allowed. `--force` overrides either.
@@ -92,6 +94,11 @@ profiles:
   work:
     local_root:  /home/bott/work
     remote_root: /mnt/nas/work
+    # Optional: scope this profile to only these relpaths under BOTH roots.
+    # Relative paths, may be nested; omit entirely to mean the whole root.
+    subpaths:
+      - reports
+      - notes/2024
 ```
 
 **Rules:**
@@ -101,6 +108,9 @@ profiles:
   **not** mount shares itself. It will refuse to operate if the remote root is missing
   or (heuristically) not mounted.
 - `~` and environment variables in root paths are expanded.
+- `subpaths`, when present, are relative paths under *both* roots; a leading `./` is
+  allowed and normalized. They must not be absolute or escape the root (`..`). An empty or
+  omitted list means the whole root.
 
 ---
 
@@ -233,13 +243,20 @@ For `checkin <profile> <relpath>`:
 5. **Nested checkouts** — rule when a parent/child of an already-checked-out path is requested.
 6. **Check-in `--delete`** — should check-in mirror local deletions to the remote (rsync `--delete`), or only add/update?
 7. **`--clean` on check-in** — should the local copy be removed after check-in, and by default?
+8. **Subpath discrepancy scan** — when a profile declares `subpaths`, a folder added
+   locally (or newly appearing remotely) that is not listed is silently ignored by scoped
+   actions. A dedicated scan should walk both roots, compare against the declared
+   `subpaths`, and flag the discrepancies (present-but-unlisted, and listed-but-missing).
+   Reporting surface (CLI vs TUI) is undecided.
 
 ---
 
 ## 14. Roadmap / milestones
 
 - **M1 — Foundations:** config schema + loader, identity resolution, `list`, `init`.
-- **M2 — Read-only status:** marker format, `status` (reconcile local state ⨉ remote markers).
+- **M2 — Read-only status:** marker format, `status` (reconcile local state ⨉ remote
+  markers), and a **subpath discrepancy scan** that flags on-disk folders not covered by a
+  profile's declared `subpaths` (see open question 8).
 - **M3 — Checkout:** `checkout` (copy + marker/lock), conflict rules, `--dry-run`, `--force`.
 - **M4 — Check-in:** `checkin` with marker removal + verification; `--clean` option.
 - **M5 — Polish:** verbose/progress output, thorough error messages, tests.

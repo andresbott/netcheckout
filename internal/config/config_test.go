@@ -267,3 +267,24 @@ func TestTargetsInvalidSubpath(t *testing.T) {
 		t.Fatal("expected error for escaping subpath, got nil")
 	}
 }
+
+func TestSampleConfigResolves(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "zarf", "sample", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, ok := cfg.Profiles["work"]
+	if !ok {
+		t.Fatal("sample config missing 'work' profile")
+	}
+	if len(work.Subpaths) == 0 {
+		t.Fatal("sample 'work' profile should declare subpaths")
+	}
+	targets, err := work.Targets()
+	if err != nil {
+		t.Fatalf("Targets() on sample work profile: %v", err)
+	}
+	if len(targets) != len(work.Subpaths) {
+		t.Fatalf("got %d targets, want %d", len(targets), len(work.Subpaths))
+	}
+}

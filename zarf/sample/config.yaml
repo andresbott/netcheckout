@@ -20,3 +20,8 @@ profiles:
   work:
     local_root: /path/to/netcheckout/zarf/sample/work/local
     remote_root: /path/to/netcheckout/zarf/sample/work/remote
+    # subpaths (optional) scope the profile to only these paths under BOTH roots.
+    # Relative, may be nested; omit entirely to act on the whole root (as "photos" does).
+    subpaths:
+      - reports
+      - notes/2024
