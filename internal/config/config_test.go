@@ -203,3 +203,18 @@ func TestValidateRoot(t *testing.T) {
 		t.Errorf("tilde root rejected: %v", err)
 	}
 }
+
+func TestValidateSubpath(t *testing.T) {
+	valid := []string{"a", "a/2024", "nested/deep/path", "./2025/jan", "a/./b"}
+	for _, s := range valid {
+		if err := config.ValidateSubpath(s); err != nil {
+			t.Errorf("ValidateSubpath(%q) = %v, want nil", s, err)
+		}
+	}
+	invalid := []string{"", "   ", "/abs", "/abs/path", "..", "../escape", "a/../../b", "."}
+	for _, s := range invalid {
+		if err := config.ValidateSubpath(s); err == nil {
+			t.Errorf("ValidateSubpath(%q) = nil, want error", s)
+		}
+	}
+}

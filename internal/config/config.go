@@ -122,3 +122,22 @@ func ValidateRoot(root string) error {
 	}
 	return nil
 }
+
+// ValidateSubpath reports whether a profile subpath is usable: a non-empty, relative
+// path that does not escape the root once cleaned. A leading "./" is allowed.
+func ValidateSubpath(sub string) error {
+	if strings.TrimSpace(sub) == "" {
+		return errors.New("subpath is required")
+	}
+	if filepath.IsAbs(sub) {
+		return errors.New("subpath must be relative")
+	}
+	clean := filepath.Clean(sub)
+	if clean == "." {
+		return errors.New("subpath must not be the root itself")
+	}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return errors.New("subpath must not escape the root")
+	}
+	return nil
+}
