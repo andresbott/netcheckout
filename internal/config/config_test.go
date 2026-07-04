@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -80,8 +81,48 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Identity != in.Identity || out.Profiles["work"] != in.Profiles["work"] {
+	if out.Identity != in.Identity || !reflect.DeepEqual(out.Profiles["work"], in.Profiles["work"]) {
 		t.Fatalf("round trip mismatch: %#v", out)
+	}
+}
+
+func TestSaveRoundTripSubpaths(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	in := &config.Config{
+		Profiles: map[string]config.Profile{
+			"work": {
+				LocalRoot:  "/home/me/work",
+				RemoteRoot: "/mnt/nas/work",
+				Subpaths:   []string{"reports", "notes/2024"},
+			},
+		},
+	}
+	if err := config.Save(p, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out.Profiles["work"], in.Profiles["work"]) {
+		t.Fatalf("round trip mismatch:\n got %#v\nwant %#v", out.Profiles["work"], in.Profiles["work"])
+	}
+}
+
+func TestSaveOmitsEmptySubpaths(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	in := &config.Config{Profiles: map[string]config.Profile{
+		"work": {LocalRoot: "/l", RemoteRoot: "/r"},
+	}}
+	if err := config.Save(p, in); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "subpaths") {
+		t.Fatalf("empty subpaths must be omitted from YAML, got:\n%s", data)
 	}
 }
 

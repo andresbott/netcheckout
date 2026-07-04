@@ -11,9 +11,17 @@ import (
 )
 
 // Profile is a named pair of roots: one on fast local disk, one on the network share.
+// Subpaths, when non-empty, scope the profile to only those relative paths under both
+// roots; an empty list means the whole root.
 type Profile struct {
 	LocalRoot  string `yaml:"local_root"`
 	RemoteRoot string `yaml:"remote_root"`
+	// TODO(subpaths-scan): edits can happen on either end. Nothing yet detects a folder
+	// added locally (or newly appearing remotely) that is not listed here — such a folder
+	// is silently ignored by a scoped action. A future scan must walk both roots, compare
+	// against Subpaths, and flag the discrepancies. See GOALS.md (open question 8) and
+	// docs/superpowers/specs/2026-07-03-profile-subpaths-design.md.
+	Subpaths []string `yaml:"subpaths,omitempty"`
 }
 
 // Config is the on-disk configuration: an identity string and named profiles.
