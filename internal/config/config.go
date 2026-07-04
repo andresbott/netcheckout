@@ -141,3 +141,34 @@ func ValidateSubpath(sub string) error {
 	}
 	return nil
 }
+
+// Target is a concrete pair of absolute paths a profile action operates on. Subpath is
+// the relative path under the roots ("" for the whole root).
+type Target struct {
+	Subpath string
+	Local   string
+	Remote  string
+}
+
+// Targets resolves a profile into the concrete local/remote path pairs to act on. With no
+// subpaths it returns a single target for the whole (expanded) root; otherwise one target
+// per validated subpath, joined onto each expanded root. Order is preserved.
+func (p Profile) Targets() ([]Target, error) {
+	localRoot := ExpandRoot(p.LocalRoot)
+	remoteRoot := ExpandRoot(p.RemoteRoot)
+	if len(p.Subpaths) == 0 {
+		return []Target{{Local: localRoot, Remote: remoteRoot}}, nil
+	}
+	out := make([]Target, 0, len(p.Subpaths))
+	for _, sub := range p.Subpaths {
+		if err := ValidateSubpath(sub); err != nil {
+			return nil, fmt.Errorf("subpath %q: %w", sub, err)
+		}
+		out = append(out, Target{
+			Subpath: sub,
+			Local:   filepath.Join(localRoot, sub),
+			Remote:  filepath.Join(remoteRoot, sub),
+		})
+	}
+	return out, nil
+}

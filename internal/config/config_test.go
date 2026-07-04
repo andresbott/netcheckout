@@ -218,3 +218,52 @@ func TestValidateSubpath(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetsWholeRoot(t *testing.T) {
+	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r"}
+	got, err := p.Targets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []config.Target{{Local: "/l", Remote: "/r"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestTargetsSubpaths(t *testing.T) {
+	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r", Subpaths: []string{"a", "b/c"}}
+	got, err := p.Targets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []config.Target{
+		{Subpath: "a", Local: "/l/a", Remote: "/r/a"},
+		{Subpath: "b/c", Local: "/l/b/c", Remote: "/r/b/c"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestTargetsExpandsRoots(t *testing.T) {
+	t.Setenv("HOME", "/home/tester")
+	p := config.Profile{LocalRoot: "~/work", RemoteRoot: "$HOME/nas", Subpaths: []string{"a"}}
+	got, err := p.Targets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Local != "/home/tester/work/a" {
+		t.Errorf("local = %q, want /home/tester/work/a", got[0].Local)
+	}
+	if got[0].Remote != "/home/tester/nas/a" {
+		t.Errorf("remote = %q, want /home/tester/nas/a", got[0].Remote)
+	}
+}
+
+func TestTargetsInvalidSubpath(t *testing.T) {
+	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r", Subpaths: []string{"../escape"}}
+	if _, err := p.Targets(); err == nil {
+		t.Fatal("expected error for escaping subpath, got nil")
+	}
+}
