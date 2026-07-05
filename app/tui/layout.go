@@ -39,7 +39,7 @@ func renderFooter(width int) string {
 // renderProfileFooter is the profile view's bottom key-hint bar.
 func renderProfileFooter(width int) string {
 	parts := []string{
-		hint("↵", "Run"), hint("↑↓", "Select"), hint("esc", "Back"), hint("q", "Quit"),
+		hint("↵", "Run"), hint("↑↓", "Select"), hint("esc", "Back"),
 	}
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
 }

@@ -53,46 +53,71 @@ func TestEditOpensPrefilledForm(t *testing.T) {
 	}
 }
 
-// TestEnterFocusesDetails: enter no longer swaps to a checkout screen; it moves
-// focus to the Details pane for the selected profile, staying in the main view.
-func TestEnterFocusesDetails(t *testing.T) {
+// TestEnterOpensProfileView: enter now switches to the full-screen profile view
+// for the selected profile, rather than focusing a pane in the main view.
+func TestEnterOpensProfileView(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.mode != modeMain {
-		t.Fatalf("want modeMain after enter, got %d", m.mode)
+	if m.mode != modeProfile {
+		t.Fatalf("want modeProfile after enter, got %d", m.mode)
 	}
-	if m.focus != paneDetails {
-		t.Fatalf("want focus paneDetails after enter, got %d", m.focus)
-	}
-}
-
-func TestTabTogglesFocus(t *testing.T) {
-	m := newModel("/tmp/x.yaml", testConfig())
-	if m.focus != paneList {
-		t.Fatalf("initial focus should be paneList, got %d", m.focus)
-	}
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.focus != paneDetails {
-		t.Fatalf("want paneDetails after tab, got %d", m.focus)
-	}
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
-	if m.focus != paneList {
-		t.Fatalf("want paneList after second tab, got %d", m.focus)
+	if m.profile.name != "alpha" {
+		t.Fatalf("want profile alpha, got %q", m.profile.name)
 	}
 }
 
-func TestDetailsEscReturnsToList(t *testing.T) {
+// TestProfileEscReturnsToMain: esc leaves the profile view back to the main list.
+func TestProfileEscReturnsToMain(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // focus Details
-	if m.focus != paneDetails {
-		t.Fatalf("want paneDetails after enter, got %d", m.focus)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeProfile {
+		t.Fatalf("want modeProfile after enter, got %d", m.mode)
 	}
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc}) // esc from Details returns to the list, does not quit
-	if m.focus != paneList {
-		t.Fatalf("want paneList after esc from details, got %d", m.focus)
-	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.mode != modeMain {
-		t.Fatalf("esc from details should stay in main view, got mode %d", m.mode)
+		t.Fatalf("want modeMain after esc, got %d", m.mode)
+	}
+}
+
+// TestProfileQIsInert: q is intentionally unbound in the profile view — it only
+// means "quit" on the main list, so pressing it here does nothing.
+func TestProfileQIsInert(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeProfile {
+		t.Fatalf("want modeProfile after enter, got %d", m.mode)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	if m.mode != modeProfile {
+		t.Fatalf("want modeProfile after q (unbound), got %d", m.mode)
+	}
+}
+
+// TestListWSNavigation: w/s move the main list cursor, same as the arrows.
+func TestListWSNavigation(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if name, _ := m.list.selected(); name != "beta" {
+		t.Fatalf("want beta selected after s, got %q", name)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if name, _ := m.list.selected(); name != "alpha" {
+		t.Fatalf("want alpha selected after w, got %q", name)
+	}
+}
+
+// TestProfileWSNavigation: w/s move the profile view's action cursor, same as
+// the arrows.
+func TestProfileWSNavigation(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open profile view for "alpha"
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if m.profile.cursor != 1 {
+		t.Fatalf("want cursor 1 after s, got %d", m.profile.cursor)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("w")})
+	if m.profile.cursor != 0 {
+		t.Fatalf("want cursor 0 after w, got %d", m.profile.cursor)
 	}
 }
 

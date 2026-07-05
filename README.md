@@ -47,10 +47,11 @@ Running `netcheckout` with no arguments opens an interactive TUI for managing pr
 - `a` — add a profile
 - `e` — edit the selected profile
 - `d` — delete the selected profile (with confirmation)
-- `enter` — focus the Details pane for the selected profile (checkout/sync/check-in coming soon)
-- `tab` — switch focus between the Profiles list and the Details pane
-- `esc` — from the list, quit; from the Details pane, return to the list; in a dialog, cancel it
-- `q` — quit
+- `enter` — open the profile view for the selected profile (checkout/check-in/status/sync coming soon)
+- in the profile view: `↑`/`↓`/`w`/`s` select an action, `enter` runs it (coming soon), `esc` returns to the list
+- in the add/edit dialog: `tab`/`↑`/`↓`/`←`/`→` move between fields, `enter`/`space` activates, `esc` cancels
+- in the delete-confirmation dialog: `tab`/`←`/`→` move between Delete/Cancel, `enter`/`space` activates, `y` deletes directly, `n`/`esc` cancels
+- `esc`/`q` — quit from the list
 
 When stdout isn't a terminal (e.g. piped or redirected), `netcheckout` prints the
 profile list as plain text instead of opening the TUI. `netcheckout list` always prints
@@ -73,6 +74,10 @@ Profiles are stored in a YAML file at `os.UserConfigDir()/netcheckout/config.yam
 
 Override the location with `--config <path>` or the `$NETCHECKOUT_CONFIG` environment
 variable.
+
+A profile may optionally scope itself to a few sub-folders with a `subpaths` list —
+relative paths under *both* roots (nested allowed; omit for the whole root). See
+[`GOALS.md`](./GOALS.md) and `zarf/sample/config.yaml` for an example.
 
 ## Develop
 

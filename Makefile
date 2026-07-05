@@ -46,8 +46,8 @@ verify: test license-check lint benchmark coverage ## run the full verification 
 #==========================================================================================
 ##@ Running
 #==========================================================================================
-run: ## run the interactive profiles TUI (seeds a git-ignored dev config from zarf/sample)
-	@[ -f netcheckout.dev.yaml ] || cp zarf/sample/config.yaml netcheckout.dev.yaml
+run: ## run the interactive profiles TUI (re-seeds a git-ignored dev config from zarf/sample each run)
+	@cp zarf/sample/config.yaml netcheckout.dev.yaml
 	@go run main.go --config netcheckout.dev.yaml
 
 #==========================================================================================

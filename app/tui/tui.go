@@ -18,28 +18,23 @@ const (
 	modeMain mode = iota
 	modeForm
 	modeConfirm
-)
-
-type pane int
-
-const (
-	paneList pane = iota
-	paneDetails
+	modeProfile
 )
 
 type model struct {
-	path        string
-	cfg         *config.Config
-	version     string
-	identity    string
-	width       int
-	height      int
-	focus       pane
-	list        listModel
-	mode        mode
-	form        formModel
-	confirmName string
-	err         error
+	path         string
+	cfg          *config.Config
+	version      string
+	identity     string
+	width        int
+	height       int
+	list         listModel
+	mode         mode
+	form         formModel
+	profile      profileModel
+	confirmName  string
+	confirmFocus confirmFocus
+	err          error
 }
 
 // Run loads the config at path and starts the interactive TUI.
@@ -60,7 +55,6 @@ func newModel(path string, cfg *config.Config) model {
 		version:  metainfo.Version,
 		identity: identityString(cfg),
 		mode:     modeMain,
-		focus:    paneList,
 		list:     newList(nil),
 	}
 	m.refreshList()
@@ -98,6 +92,10 @@ func (m *model) resize(ws tea.WindowSizeMsg) {
 	m.width = ws.Width
 	m.height = ws.Height
 	m.form.setWidth(ws.Width)
+	m.form.termHeight = ws.Height
+	if m.form.browsing {
+		m.form.picker.setHeight(m.form.pickerHeight())
+	}
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -115,6 +113,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateForm(msg)
 	case modeConfirm:
 		return m.updateConfirm(msg)
+	case modeProfile:
+		return m.updateProfile(msg)
 	default:
 		return m.updateMain(msg)
 	}
@@ -126,24 +126,11 @@ func (m model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch key.String() {
-	case "q":
+	case "q", "esc":
 		return m, tea.Quit
-	case "esc":
-		if m.focus == paneDetails {
-			m.focus = paneList
-			return m, nil
-		}
-		return m, tea.Quit
-	case "tab":
-		if m.focus == paneList {
-			m.focus = paneDetails
-		} else {
-			m.focus = paneList
-		}
-		return m, nil
 	case "enter":
-		if _, ok := m.list.selected(); ok {
-			m.focus = paneDetails
+		if name, ok := m.list.selected(); ok {
+			return m.openProfile(name)
 		}
 		return m, nil
 	case "a":
@@ -156,18 +143,15 @@ func (m model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "d":
 		if name, ok := m.list.selected(); ok {
 			m.confirmName = name
+			m.confirmFocus = confirmFocusCancel
 			m.mode = modeConfirm
 		}
 		return m, nil
-	case "up", "k":
-		if m.focus == paneList {
-			m.list.moveUp()
-		}
+	case "up", "w":
+		m.list.moveUp()
 		return m, nil
-	case "down", "j":
-		if m.focus == paneList {
-			m.list.moveDown()
-		}
+	case "down", "s":
+		m.list.moveDown()
 		return m, nil
 	}
 	return m, nil
@@ -176,15 +160,52 @@ func (m model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) openForm(origName string, p config.Profile) (tea.Model, tea.Cmd) {
 	m.form = newForm(origName, p)
 	m.form.setWidth(m.width)
+	m.form.termHeight = m.height
 	m.mode = modeForm
 	return m, textinput.Blink
 }
 
+func (m model) openProfile(name string) (tea.Model, tea.Cmd) {
+	m.profile = newProfileView(name)
+	m.mode = modeProfile
+	return m, nil
+}
+
+func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "esc":
+		m.mode = modeMain
+		return m, nil
+	case "up", "w":
+		m.profile.moveUp()
+		return m, nil
+	case "down", "s":
+		m.profile.moveDown()
+		return m, nil
+	case "enter":
+		// actions are not wired to the (nonexistent) checkout engine yet — no-op.
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.form.browsing {
+		var cmd tea.Cmd
+		m.form, cmd = m.form.updatePicker(msg)
+		return m, cmd
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		var cmd tea.Cmd
 		m.form, cmd = m.form.updateInputs(msg)
+		return m, cmd
+	}
+	if cmd, ok := m.form.navKey(key.String()); ok {
 		return m, cmd
 	}
 	switch key.String() {
@@ -192,11 +213,27 @@ func (m model) updateForm(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = modeMain
 		return m, nil
 	case "enter":
-		return m.submitForm()
-	case "tab", "down":
-		return m, m.form.focusNext()
-	case "shift+tab", "up":
-		return m, m.form.focusPrev()
+		switch formSlots[m.form.focus].kind {
+		case slotButton:
+			return m, m.form.openPicker()
+		case slotSave:
+			return m.submitForm()
+		case slotCancel:
+			m.mode = modeMain
+			return m, nil
+		}
+		// on a text input: enter does nothing
+	case " ":
+		switch formSlots[m.form.focus].kind {
+		case slotButton:
+			return m, m.form.openPicker()
+		case slotSave:
+			return m.submitForm()
+		case slotCancel:
+			m.mode = modeMain
+			return m, nil
+		}
+		// on a text input: fall through to type the space
 	}
 	var cmd tea.Cmd
 	m.form, cmd = m.form.updateInputs(msg)
@@ -267,7 +304,9 @@ func (m model) View() string {
 	case modeForm:
 		return m.overlayModal(m.form.View())
 	case modeConfirm:
-		return m.overlayModal(confirmModal(m.confirmName, m.width))
+		return m.overlayModal(confirmModal(m.confirmName, m.confirmFocus, m.width))
+	case modeProfile:
+		return m.profileView()
 	default:
 		return m.mainView(false)
 	}
@@ -291,15 +330,12 @@ func (m model) mainView(dim bool) string {
 	}
 	rightW := w - leftW
 
-	listFocused := !dim && m.focus == paneList
-	detailsFocused := !dim && m.focus == paneDetails
-
 	name, _ := m.list.selected()
 	listBody := m.list.view(leftW-2, bodyH-2)
 	detailsBody := renderDetails(name, m.cfg.Profiles[name], rightW-2)
 
-	left := titledBox("Profiles", listBody, leftW, bodyH, listFocused)
-	right := titledBox("Details", detailsBody, rightW, bodyH, detailsFocused)
+	left := titledBox("Profiles", listBody, leftW, bodyH, !dim)
+	right := titledBox("Details", detailsBody, rightW, bodyH, false)
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + renderFooter(w)

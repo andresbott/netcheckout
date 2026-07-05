@@ -287,4 +287,16 @@ func TestSampleConfigResolves(t *testing.T) {
 	if len(targets) != len(work.Subpaths) {
 		t.Fatalf("got %d targets, want %d", len(targets), len(work.Subpaths))
 	}
+
+	// Every profile in the sample must resolve to at least one target
+	// (whole-root profiles resolve to one; subpath profiles to one per subpath).
+	for name, p := range cfg.Profiles {
+		got, err := p.Targets()
+		if err != nil {
+			t.Fatalf("Targets() on sample %q profile: %v", name, err)
+		}
+		if len(got) == 0 {
+			t.Fatalf("sample %q profile resolved to no targets", name)
+		}
+	}
 }

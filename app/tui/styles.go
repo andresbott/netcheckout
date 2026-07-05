@@ -20,7 +20,6 @@ var (
 	colAccent = lipgloss.Color("205") // hot pink: focus border + key hints
 	colDim    = lipgloss.Color("240") // gray: unfocused borders, labels
 	colTitle  = lipgloss.Color("141") // purple: header app name
-	colStatus = lipgloss.Color("42")  // green: section headers
 )
 
 var (
@@ -31,8 +30,12 @@ var (
 	helpTextStyle    = lipgloss.NewStyle().Foreground(colDim)
 	headerAppStyle   = lipgloss.NewStyle().Foreground(colTitle).Bold(true)
 	headerIDStyle    = lipgloss.NewStyle().Foreground(colDim)
-	sectionStyle     = lipgloss.NewStyle().Foreground(colStatus)
 )
+
+// focusLabelStyle highlights the focused form field's label in the accent
+// colour; that field's box border switches to the accent colour too (see
+// fieldBox in form.go).
+var focusLabelStyle = lipgloss.NewStyle().Foreground(colAccent)
 
 // titledBox renders a rounded-border box of exactly width x height cells with
 // title embedded in the top border and body clipped/padded to fit. Border and

@@ -53,22 +53,107 @@ func TestDeleteCancelled(t *testing.T) {
 	}
 }
 
-// TestDeleteEnterDoesNotConfirm locks in spec §8: only y/Y confirms a delete.
-// enter is ignored in confirm mode, so it can't become an accidental-delete
-// footgun.
-func TestDeleteEnterDoesNotConfirm(t *testing.T) {
+// TestDeleteEnterOnDefaultFocusCancelsNotDeletes: the dialog opens with Cancel
+// focused (the safe default), so a bare enter right after opening activates
+// Cancel — it must never delete on the very first keystroke.
+func TestDeleteEnterOnDefaultFocusCancelsNotDeletes(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := &config.Config{Profiles: map[string]config.Profile{
 		"alpha": {LocalRoot: "/l/a", RemoteRoot: "/r/a"},
 	}}
 	m := newModel(p, cfg)
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if m.confirmFocus != confirmFocusCancel {
+		t.Fatalf("dialog should open with Cancel focused, got %d", m.confirmFocus)
+	}
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.mode != modeConfirm {
-		t.Fatalf("enter should not confirm delete, want modeConfirm, got %d", m.mode)
+	if m.mode != modeMain {
+		t.Fatalf("enter on the default-focused Cancel should return to main, mode = %d", m.mode)
 	}
 	if _, exists := m.cfg.Profiles["alpha"]; !exists {
-		t.Error("alpha should still exist; enter must not delete")
+		t.Error("alpha should still exist; a bare enter must not delete")
+	}
+}
+
+// TestDeleteFocusedButtonDeletes: moving focus to Delete (via Tab) and
+// activating it removes the profile and persists it — the new button-driven
+// path, held to the same persistence rigor as TestDeleteConfirmed's y/Y path.
+func TestDeleteFocusedButtonDeletes(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &config.Config{Profiles: map[string]config.Profile{
+		"alpha": {LocalRoot: "/l/a", RemoteRoot: "/r/a"},
+	}}
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(p, cfg)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.confirmFocus != confirmFocusDelete {
+		t.Fatalf("tab should move focus to Delete, got %d", m.confirmFocus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeMain {
+		t.Fatalf("enter on focused Delete should return to main, mode = %d", m.mode)
+	}
+	if _, exists := m.cfg.Profiles["alpha"]; exists {
+		t.Error("alpha should be deleted")
+	}
+	saved, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := saved.Profiles["alpha"]; exists {
+		t.Error("delete via the button path should be persisted")
+	}
+}
+
+// TestDeleteFocusLeftRight: left/right toggle focus between Delete and Cancel,
+// mirroring the add/edit form's Save/Cancel toggle.
+func TestDeleteFocusLeftRight(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &config.Config{Profiles: map[string]config.Profile{
+		"alpha": {LocalRoot: "/l/a", RemoteRoot: "/r/a"},
+	}}
+	m := newModel(p, cfg)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	if m.confirmFocus != confirmFocusDelete {
+		t.Fatalf("right from Cancel should focus Delete, got %d", m.confirmFocus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyLeft})
+	if m.confirmFocus != confirmFocusCancel {
+		t.Fatalf("left from Delete should focus Cancel, got %d", m.confirmFocus)
+	}
+}
+
+// TestDeleteFocusTabCycles: tab and shift+tab also toggle focus between the two
+// buttons.
+func TestDeleteFocusTabCycles(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &config.Config{Profiles: map[string]config.Profile{
+		"alpha": {LocalRoot: "/l/a", RemoteRoot: "/r/a"},
+	}}
+	m := newModel(p, cfg)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.confirmFocus != confirmFocusDelete {
+		t.Fatalf("tab from Cancel should focus Delete, got %d", m.confirmFocus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyShiftTab})
+	if m.confirmFocus != confirmFocusCancel {
+		t.Fatalf("shift+tab from Delete should focus Cancel, got %d", m.confirmFocus)
+	}
+}
+
+// TestConfirmModalHasDeleteCancelButtons guards the new button UI: the modal
+// must render both bracketed buttons and the shared hint line.
+func TestConfirmModalHasDeleteCancelButtons(t *testing.T) {
+	view := confirmModal("alpha", confirmFocusCancel, 80)
+	for _, want := range []string{"[ Delete ]", "[ Cancel ]", "Move", "Activate", "Cancel"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("confirm modal missing %q:\n%s", want, view)
+		}
 	}
 }
 

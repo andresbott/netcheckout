@@ -35,3 +35,4 @@ dist/
 .playwright-mcp/
 docs/superpowers
 .superpowers
+.tokensave
