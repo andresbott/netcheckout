@@ -8,13 +8,15 @@ linters:
     - gosec
     - dupl
 
-  # exclude noisy structural linters on test files
+  # exclude noisy linters on test files: structural checks plus gosec, whose
+  # G304 fires on tests that read temp files they just wrote under t.TempDir().
   exclusions:
     rules:
       - path: '(.+)_test\.go'
         linters:
           - nestif
           - dupl
+          - gosec
 
   settings:
     nolintlint:

@@ -7,7 +7,8 @@ checked out and by whom.
 
 See [`GOALS.md`](./GOALS.md) for the full design.
 
-> Status: bootstrap — only the `version` command is implemented so far.
+> Status: `version`, `list`, and the profile-management TUI are implemented;
+> checkout/check-in/status are not yet — see [`GOALS.md`](./GOALS.md).
 
 ## Install
 
@@ -38,7 +39,63 @@ sudo apt install ./netcheckout_*_amd64.deb
 Grab a prebuilt `tar.gz` archive from the
 [releases page](https://github.com/andresbott/netcheckout/releases).
 
-## Build
+## Usage
+
+Running `netcheckout` with no arguments opens an interactive TUI for managing profiles
+(a profile is a named `local_root` / `remote_root` pair):
+
+- `a` — add a profile
+- `e` — edit the selected profile
+- `d` — delete the selected profile (with confirmation)
+- `enter` — open the profile view for the selected profile (checkout/check-in/status/sync coming soon)
+- in the profile view: `↑`/`↓`/`w`/`s` select an action, `enter` runs it (coming soon), `esc` returns to the list
+- in the add/edit dialog: `tab`/`↑`/`↓`/`←`/`→` move between fields, `enter`/`space` activates, `esc` cancels
+- in the delete-confirmation dialog: `tab`/`←`/`→` move between Delete/Cancel, `enter`/`space` activates, `y` deletes directly, `n`/`esc` cancels
+- `esc`/`q` — quit from the list
+
+When stdout isn't a terminal (e.g. piped or redirected), `netcheckout` prints the
+profile list as plain text instead of opening the TUI. `netcheckout list` always prints
+that plain-text list, TUI or not:
+
+```bash
+netcheckout          # interactive TUI (plain-text list when not a terminal)
+netcheckout list     # always prints the profile list as plain text
+```
+
+### Configuration file
+
+Profiles are stored in a YAML file at `os.UserConfigDir()/netcheckout/config.yaml`:
+
+| OS | Default path |
+|---|---|
+| Linux | `~/.config/netcheckout/config.yaml` |
+| macOS | `~/Library/Application Support/netcheckout/config.yaml` |
+| Windows | `%AppData%\netcheckout\config.yaml` |
+
+Override the location with `--config <path>` or the `$NETCHECKOUT_CONFIG` environment
+variable.
+
+A profile may optionally scope itself to a few sub-folders with a `subpaths` list —
+relative paths under *both* roots (nested allowed; omit for the whole root). See
+[`GOALS.md`](./GOALS.md) and `zarf/sample/config.yaml` for an example.
+
+## Develop
+
+Requires Go 1.26+. The full toolchain also needs `golangci-lint`, `goreleaser`, and
+`go-licence-detector`; at runtime `rsync` must be on `PATH`.
+
+```bash
+make verify       # test → license-check → lint → benchmark → coverage
+make help         # list all targets
+```
+
+### Run
+
+```bash
+make run          # or: go run main.go version
+```
+
+### Build
 
 ```bash
 make build        # goreleaser snapshot build for the current OS/arch → ./dist
@@ -46,18 +103,15 @@ make build        # goreleaser snapshot build for the current OS/arch → ./dist
 go build ./...
 ```
 
-## Run
+### Release
+
+Releases are published by pushing a semver tag from a clean `main` branch. The tag
+triggers the [Release workflow](./.github/workflows/release.yml), which runs GoReleaser
+to build and publish the archives, `.deb`, and Homebrew cask.
 
 ```bash
-go run main.go version
+make tag version="v1.2.3"
 ```
 
-## Develop
-
-```bash
-make verify       # test → license-check → lint → benchmark → coverage
-make help         # list all targets
-```
-
-Requires Go 1.26+. The full toolchain also needs `golangci-lint`, `goreleaser`, and
-`go-licence-detector`; at runtime `rsync` must be on `PATH`.
+`make tag` refuses to run unless you're on `main` with a clean working tree, then creates
+and pushes the `vX.Y.Z` tag.
