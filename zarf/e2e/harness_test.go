@@ -125,7 +125,13 @@ func writeRandomFileWithRand(t *testing.T, r *rand.Rand, path string) {
 	}
 }
 
-// snapshot walks root and returns relative path -> file contents for every regular file.
+// snapshot walks root and returns relative path -> file contents for every regular
+// file, excluding the checkout marker (markerFileName): the marker is lock metadata
+// about a checkout, not tracked data, and every stage that cares about it already
+// asserts on it directly via markerPath + os.Stat. Without this exclusion, a snapshot
+// taken while a checkout marker exists on the remote could never equal one taken from
+// the local side (which never has a marker), since the two directory listings would
+// differ by exactly that one path.
 func snapshot(t *testing.T, root string) map[string][]byte {
 	t.Helper()
 	out := map[string][]byte{}
@@ -134,6 +140,9 @@ func snapshot(t *testing.T, root string) map[string][]byte {
 			return err
 		}
 		if d.IsDir() {
+			return nil
+		}
+		if d.Name() == markerFileName {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
@@ -205,10 +214,27 @@ func writeConfig(t *testing.T, identity, profile, local, remote string) string {
 	return path
 }
 
+// markerFileName is the checkout marker's filename, per GOALS.md §5.
+const markerFileName = ".netcheckout.json"
+
 // markerPath returns the path GOALS.md §5 specifies for a checkout marker on a
 // whole-root profile.
 func markerPath(remoteRoot string) string {
-	return filepath.Join(remoteRoot, ".netcheckout.json")
+	return filepath.Join(remoteRoot, markerFileName)
+}
+
+func TestSnapshotExcludesMarkerFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(markerPath(dir), []byte(`{"checked_out_by":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := snapshot(t, dir)
+	want := map[string][]byte{"a.txt": []byte("hello")}
+	assertSnapshotsEqual(t, want, got)
 }
 
 func TestRandomTreeWithinBounds(t *testing.T) {
