@@ -1,0 +1,76 @@
+// Package status computes whether a profile's local and remote roots are in
+// sync, using rsync dry runs in both directions.
+package status
+
+import (
+	"context"
+	"fmt"
+	"os"
+
+	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/rsync"
+)
+
+// Differ is satisfied by *rsync.Syncer; lets tests inject a fake.
+type Differ interface {
+	Diff(ctx context.Context, j rsync.Job) (rsync.Diff, error)
+}
+
+// TargetStatus is the bidirectional diff for one target of a profile: the
+// whole root when no subpaths are declared, or one declared subpath.
+type TargetStatus struct {
+	Subpath      string
+	Pull         rsync.Diff // remote -> local: what a checkout/sync-down would change
+	Push         rsync.Diff // local -> remote: what a check-in would change
+	LocalMissing bool       // Local doesn't exist yet; Push was not attempted
+}
+
+// InSync reports whether this target has no pending changes in either
+// direction. When LocalMissing, only Pull is meaningful (Push was skipped).
+func (t TargetStatus) InSync() bool {
+	if t.LocalMissing {
+		return t.Pull.InSync
+	}
+	return t.Pull.InSync && t.Push.InSync
+}
+
+// Label is a human-readable name for this target: "(root)" for the whole
+// root, or the declared subpath.
+func (t TargetStatus) Label() string {
+	return label(t.Subpath)
+}
+
+func label(subpath string) string {
+	if subpath == "" {
+		return "(root)"
+	}
+	return subpath
+}
+
+func computeTarget(ctx context.Context, d Differ, t config.Target) (TargetStatus, error) {
+	_, statErr := os.Stat(t.Local)
+	localMissing := os.IsNotExist(statErr)
+
+	pull, err := d.Diff(ctx, rsync.Job{
+		Local:     rsync.Endpoint{Path: t.Local},
+		Remote:    rsync.Endpoint{Path: t.Remote},
+		Direction: rsync.Pull,
+	})
+	if err != nil {
+		return TargetStatus{}, fmt.Errorf("%s: pull diff: %w", label(t.Subpath), err)
+	}
+
+	if localMissing {
+		return TargetStatus{Subpath: t.Subpath, Pull: pull, LocalMissing: true}, nil
+	}
+
+	push, err := d.Diff(ctx, rsync.Job{
+		Local:     rsync.Endpoint{Path: t.Local},
+		Remote:    rsync.Endpoint{Path: t.Remote},
+		Direction: rsync.Push,
+	})
+	if err != nil {
+		return TargetStatus{}, fmt.Errorf("%s: push diff: %w", label(t.Subpath), err)
+	}
+	return TargetStatus{Subpath: t.Subpath, Pull: pull, Push: push}, nil
+}
