@@ -157,21 +157,35 @@ func snapshot(t *testing.T, root string) map[string][]byte {
 // got, rather than failing on the first difference.
 func assertSnapshotsEqual(t *testing.T, want, got map[string][]byte) {
 	t.Helper()
+	for _, msg := range diffSnapshots(want, got) {
+		t.Error(msg)
+	}
+}
+
+// diffSnapshots returns one message per missing, extra, or differing path between want
+// and got; an empty result means the snapshots are equal. Pure function (no *testing.T)
+// so the comparison logic can be tested directly: a subtest that is meant to fail (via
+// t.Run) would otherwise mark its parent test as failed too, since a failing subtest
+// always propagates failure up to every ancestor *testing.T, regardless of what the
+// parent's own code does afterward.
+func diffSnapshots(want, got map[string][]byte) []string {
+	var msgs []string
 	for path, wantData := range want {
 		gotData, ok := got[path]
 		if !ok {
-			t.Errorf("missing path %s", path)
+			msgs = append(msgs, fmt.Sprintf("missing path %s", path))
 			continue
 		}
 		if !bytes.Equal(wantData, gotData) {
-			t.Errorf("path %s: content differs (want %d bytes, got %d bytes)", path, len(wantData), len(gotData))
+			msgs = append(msgs, fmt.Sprintf("path %s: content differs (want %d bytes, got %d bytes)", path, len(wantData), len(gotData)))
 		}
 	}
 	for path := range got {
 		if _, ok := want[path]; !ok {
-			t.Errorf("unexpected extra path %s", path)
+			msgs = append(msgs, fmt.Sprintf("unexpected extra path %s", path))
 		}
 	}
+	return msgs
 }
 
 // writeConfig writes a single-profile config via internal/config.Save (the real
@@ -254,24 +268,19 @@ func TestSnapshotCapturesContents(t *testing.T) {
 	assertSnapshotsEqual(t, want, got)
 }
 
-func TestAssertSnapshotsEqualPassesOnMatch(t *testing.T) {
+func TestDiffSnapshotsEqual(t *testing.T) {
 	snap := map[string][]byte{"a.txt": []byte("A")}
-	ok := t.Run("subcheck", func(t *testing.T) {
-		assertSnapshotsEqual(t, snap, snap)
-	})
-	if !ok {
-		t.Fatal("expected assertSnapshotsEqual to pass on identical snapshots")
+	if msgs := diffSnapshots(snap, snap); len(msgs) != 0 {
+		t.Fatalf("diffSnapshots(equal, equal) = %v, want empty", msgs)
 	}
 }
 
-func TestAssertSnapshotsEqualDetectsMismatch(t *testing.T) {
+func TestDiffSnapshotsDetectsMismatch(t *testing.T) {
 	want := map[string][]byte{"a.txt": []byte("A")}
 	got := map[string][]byte{"a.txt": []byte("B")}
-	ok := t.Run("subcheck", func(t *testing.T) {
-		assertSnapshotsEqual(t, want, got)
-	})
-	if ok {
-		t.Fatal("expected assertSnapshotsEqual to fail the subtest on mismatch")
+	msgs := diffSnapshots(want, got)
+	if len(msgs) == 0 {
+		t.Fatal("diffSnapshots(mismatched) = empty, want at least one message")
 	}
 }
 
