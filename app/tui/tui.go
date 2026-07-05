@@ -340,15 +340,8 @@ func (m model) mainView(dim bool) string {
 	}
 	rightW := w - leftW
 
-	detailsH := 8
+	detailsH := bodyH / 2
 	topH := bodyH - detailsH
-	if topH < 3 {
-		topH = 3
-		detailsH = bodyH - topH
-		if detailsH < 3 {
-			detailsH = 3
-		}
-	}
 
 	var topTitle, topBody, name string
 	if m.sub == subActions {
