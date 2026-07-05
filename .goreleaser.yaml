@@ -74,6 +74,9 @@ homebrew_casks:
       owner: andresbott
       name: netcheckout
     directory: Casks
+    commit_author:
+      name: Andres Bott
+      email: contact@andresbott.com
     homepage: "https://github.com/andresbott/netcheckout"
     description: "CLI to check out/in work directories over network drives via rsync"
     dependencies:
