@@ -47,6 +47,7 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(
 		versionCmd(),
 		newListCmd(&cfgPath),
+		newStatusCmd(&cfgPath),
 	)
 
 	return cmd

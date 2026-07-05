@@ -136,12 +136,14 @@ Human-readable JSON so anyone browsing the share understands it:
 
 ---
 
-## 6. Local state _(proposed)_
+## 6. Local state _(proposed, deferred — see open question 9)_
 
-A lightweight local state file (`~/.local/state/netcheckout/state.json`) records active
-checkouts (profile, relpath, timestamp) so `status` can report what *this machine* holds
-without scanning every remote. Remote markers remain the authoritative lock; local state
-is a convenience/cache and is reconciled against markers on `status`.
+A lightweight local state file (`~/.local/state/netcheckout/state.json`) would record active
+checkouts (profile, relpath, timestamp) so a future command could report what *this machine*
+holds without scanning every remote, reconciling local state against remote markers. This is
+not implemented: `status` (§7) currently only diffs local vs remote content via `rsync`
+dry-run and does not touch markers or this local state file. Whether this reconciliation
+becomes part of `status` later, or its own command, is open question 9.
 
 ---
 
@@ -151,7 +153,7 @@ is a convenience/cache and is reconciled against markers on `status`.
 |---|---|
 | `netcheckout` | Launch the interactive TUI to manage profiles (add/edit/delete). Prints the plain-text profile list instead when stdout isn't a terminal (e.g. piped). |
 | `netcheckout list` | Print configured profiles and their roots as plain text. |
-| `netcheckout status [profile]` | Show active checkouts (local state ⨉ remote markers), flag conflicts/stale locks. |
+| `netcheckout status <profile>` | Run `rsync` dry-run diffs in both directions and report whether the profile's local and remote roots differ, listing the changes needed to bring them in sync. |
 | `netcheckout checkout <profile> [relpath]` | Copy `remote→local` (remote unchanged), write marker. |
 | `netcheckout checkin  <profile> [relpath]` | Push `local→remote`, remove marker. |
 | `netcheckout init` | Write a starter config file if none exists. |
@@ -248,15 +250,22 @@ For `checkin <profile> <relpath>`:
    actions. A dedicated scan should walk both roots, compare against the declared
    `subpaths`, and flag the discrepancies (present-but-unlisted, and listed-but-missing).
    Reporting surface (CLI vs TUI) is undecided.
+9. **Marker/lock reconciliation for `status`** — the original plan for `status`
+   was to reconcile local state against remote markers (§5/§6): show active
+   checkouts and flag conflicts/stale locks. That's deferred in favor of a
+   simpler `status` that only diffs local vs remote content via `rsync`
+   dry-run. Whether marker reconciliation becomes part of `status` later, or
+   its own command, is still open.
 
 ---
 
 ## 14. Roadmap / milestones
 
 - **M1 — Foundations:** config schema + loader, identity resolution, `list`, `init`.
-- **M2 — Read-only status:** marker format, `status` (reconcile local state ⨉ remote
-  markers), and a **subpath discrepancy scan** that flags on-disk folders not covered by a
-  profile's declared `subpaths` (see open question 8).
+- **M2 — Read-only status:** `status` (rsync dry-run diff of local vs remote — done),
+  and a **subpath discrepancy scan** that flags on-disk folders not covered by a
+  profile's declared `subpaths` (see open question 8). Marker format and local-state
+  reconciliation (see open question 9) remain open.
 - **M3 — Checkout:** `checkout` (copy + marker/lock), conflict rules, `--dry-run`, `--force`.
 - **M4 — Check-in:** `checkin` with marker removal + verification; `--clean` option.
 - **M5 — Polish:** verbose/progress output, thorough error messages, tests.
