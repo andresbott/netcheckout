@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"sync"
 )
 
 // runner executes an rsync command. It is injectable so tests need not shell out.
@@ -75,14 +76,29 @@ func (s *Syncer) Sync(ctx context.Context, j Job) (Result, error) {
 	return Result{Changes: parseItemize(out).Changes, Raw: out}, nil
 }
 
+// syncWriter serializes writes to an underlying writer. execRun copies stdout and
+// stderr on separate goroutines; wrapping a shared tee in one keeps a
+// non-concurrent-safe Output (for example a bytes.Buffer) safe.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // execRun is the default runner: it runs the command to completion, capturing
 // stdout and stderr and, when tee is non-nil, mirroring both to it live.
 func execRun(ctx context.Context, bin string, args []string, tee io.Writer) (runResult, error) {
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // G204: bin and args are built by this package from typed Job fields, not untrusted external input.
 	var out, errb bytes.Buffer
 	if tee != nil {
-		cmd.Stdout = io.MultiWriter(&out, tee)
-		cmd.Stderr = io.MultiWriter(&errb, tee)
+		st := &syncWriter{w: tee}
+		cmd.Stdout = io.MultiWriter(&out, st)
+		cmd.Stderr = io.MultiWriter(&errb, st)
 	} else {
 		cmd.Stdout = &out
 		cmd.Stderr = &errb

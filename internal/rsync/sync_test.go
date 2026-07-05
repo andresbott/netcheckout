@@ -126,3 +126,17 @@ func TestExecRunTeesOutput(t *testing.T) {
 		t.Errorf("tee = %q", buf.String())
 	}
 }
+
+func TestExecRunTeeIsConcurrencySafe(t *testing.T) {
+	var buf bytes.Buffer
+	// sh writes to stdout and stderr; os/exec copies each on its own goroutine, so
+	// both tee into buf concurrently. Without the synchronized tee this races under
+	// `go test -race`.
+	if _, err := execRun(context.Background(), "sh", []string{"-c", "printf out; printf err >&2"}, &buf); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if len(got) != 6 || !strings.Contains(got, "out") || !strings.Contains(got, "err") {
+		t.Errorf("tee = %q, want both \"out\" and \"err\" (6 bytes)", got)
+	}
+}
