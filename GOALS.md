@@ -136,12 +136,14 @@ Human-readable JSON so anyone browsing the share understands it:
 
 ---
 
-## 6. Local state _(proposed)_
+## 6. Local state _(proposed, deferred — see open question 9)_
 
-A lightweight local state file (`~/.local/state/netcheckout/state.json`) records active
-checkouts (profile, relpath, timestamp) so `status` can report what *this machine* holds
-without scanning every remote. Remote markers remain the authoritative lock; local state
-is a convenience/cache and is reconciled against markers on `status`.
+A lightweight local state file (`~/.local/state/netcheckout/state.json`) would record active
+checkouts (profile, relpath, timestamp) so a future command could report what *this machine*
+holds without scanning every remote, reconciling local state against remote markers. This is
+not implemented: `status` (§7) currently only diffs local vs remote content via `rsync`
+dry-run and does not touch markers or this local state file. Whether this reconciliation
+becomes part of `status` later, or its own command, is open question 9.
 
 ---
 
