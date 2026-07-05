@@ -6,7 +6,10 @@ import (
 	"runtime"
 
 	"github.com/andresbott/netcheckout/app/metainfo"
+	"github.com/andresbott/netcheckout/app/tui"
+	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Execute is the entry point for the command line.
@@ -18,9 +21,20 @@ func Execute() {
 }
 
 func newRootCommand() *cobra.Command {
+	var cfgPath string
+
 	cmd := &cobra.Command{
-		Use:   "netcheckout",
-		Short: "netcheckout: check out and check in work directories over network drives",
+		Use:           "netcheckout",
+		Short:         "netcheckout: check out and check in work directories over network drives",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := resolvePath(cfgPath)
+			if err != nil {
+				return err
+			}
+			return runRoot(cmd, path, term.IsTerminal(int(os.Stdout.Fd())))
+		},
 	}
 
 	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
@@ -28,8 +42,11 @@ func newRootCommand() *cobra.Command {
 		return nil
 	})
 
+	cmd.PersistentFlags().StringVar(&cfgPath, "config", "", "path to the config file (default: OS config dir)")
+
 	cmd.AddCommand(
 		versionCmd(),
+		newListCmd(&cfgPath),
 	)
 
 	return cmd
@@ -46,4 +63,16 @@ func versionCmd() *cobra.Command {
 			fmt.Printf("Compiler:   %s\n", runtime.Version())
 		},
 	}
+}
+
+func runRoot(cmd *cobra.Command, path string, interactive bool) error {
+	if !interactive {
+		cfg, err := config.Load(path)
+		if err != nil {
+			return err
+		}
+		printProfiles(cmd.OutOrStdout(), cfg)
+		return nil
+	}
+	return tui.Run(path)
 }

@@ -22,6 +22,8 @@ coverage.out
 dist/
 # local build of the binary
 /netcheckout
+# local dev config seeded by `make run`
+/netcheckout.dev.yaml
 
 # local env (secrets, API keys)
 .env
@@ -33,3 +35,4 @@ dist/
 .playwright-mcp/
 docs/superpowers
 .superpowers
+.tokensave
