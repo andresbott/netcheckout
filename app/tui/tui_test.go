@@ -53,43 +53,65 @@ func TestEditOpensPrefilledForm(t *testing.T) {
 	}
 }
 
-// TestEnterOpensProfileView: enter now switches to the full-screen profile view
-// for the selected profile, rather than focusing a pane in the main view.
-func TestEnterOpensProfileView(t *testing.T) {
+// TestEnterEntersActions: enter now reveals the Actions box in place of the
+// profile list (modeMain throughout), rather than switching to a separate mode.
+func TestEnterEntersActions(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.mode != modeProfile {
-		t.Fatalf("want modeProfile after enter, got %d", m.mode)
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after enter, got %d", m.mode)
+	}
+	if m.sub != subActions {
+		t.Fatalf("want subActions after enter, got %d", m.sub)
 	}
 	if m.profile.name != "alpha" {
 		t.Fatalf("want profile alpha, got %q", m.profile.name)
 	}
 }
 
-// TestProfileEscReturnsToMain: esc leaves the profile view back to the main list.
-func TestProfileEscReturnsToMain(t *testing.T) {
+// TestActionsEscReturnsToList: esc from the Actions box returns to the list,
+// without leaving modeMain.
+func TestActionsEscReturnsToList(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.mode != modeProfile {
-		t.Fatalf("want modeProfile after enter, got %d", m.mode)
+	if m.sub != subActions {
+		t.Fatalf("want subActions after enter, got %d", m.sub)
 	}
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.mode != modeMain {
 		t.Fatalf("want modeMain after esc, got %d", m.mode)
 	}
+	if m.sub != subList {
+		t.Fatalf("want subList after esc, got %d", m.sub)
+	}
 }
 
-// TestProfileQIsInert: q is intentionally unbound in the profile view — it only
-// means "quit" on the main list, so pressing it here does nothing.
-func TestProfileQIsInert(t *testing.T) {
+// TestActionsEscPreservesListCursor: leaving Actions back to the list keeps the
+// list's cursor where it was, rather than resetting to the top.
+func TestActionsEscPreservesListCursor(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown}) // select "beta"
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.profile.name != "beta" {
+		t.Fatalf("want profile beta, got %q", m.profile.name)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if name, _ := m.list.selected(); name != "beta" {
+		t.Fatalf("want beta still selected after esc, got %q", name)
+	}
+}
+
+// TestActionsQIsInert: q is intentionally unbound while Actions is showing — it
+// only means "quit" on the plain list, so pressing it here does nothing.
+func TestActionsQIsInert(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.mode != modeProfile {
-		t.Fatalf("want modeProfile after enter, got %d", m.mode)
+	if m.sub != subActions {
+		t.Fatalf("want subActions after enter, got %d", m.sub)
 	}
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	if m.mode != modeProfile {
-		t.Fatalf("want modeProfile after q (unbound), got %d", m.mode)
+	if m.sub != subActions {
+		t.Fatalf("want subActions after q (unbound), got %d", m.sub)
 	}
 }
 
@@ -106,11 +128,11 @@ func TestListWSNavigation(t *testing.T) {
 	}
 }
 
-// TestProfileWSNavigation: w/s move the profile view's action cursor, same as
-// the arrows.
-func TestProfileWSNavigation(t *testing.T) {
+// TestActionsWSNavigation: w/s move the Actions box's cursor, same as the
+// arrows.
+func TestActionsWSNavigation(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // open profile view for "alpha"
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // reveal Actions for "alpha"
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if m.profile.cursor != 1 {
 		t.Fatalf("want cursor 1 after s, got %d", m.profile.cursor)
@@ -172,6 +194,19 @@ func TestViewFitsWindowWidth(t *testing.T) {
 	for _, w := range []int{80, 100, 120} {
 		m := newModel("/tmp/x.yaml", testConfig())
 		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
+		if got := lipgloss.Width(m.View()); got > w {
+			t.Errorf("width=%d: view renders %d cols, overflow %d", w, got, got-w)
+		}
+	}
+}
+
+// TestActionsViewFitsWindowWidth: same width guard, once Actions is showing
+// instead of the plain list.
+func TestActionsViewFitsWindowWidth(t *testing.T) {
+	for _, w := range []int{80, 100, 120} {
+		m := newModel("/tmp/x.yaml", testConfig())
+		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
+		m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 		if got := lipgloss.Width(m.View()); got > w {
 			t.Errorf("width=%d: view renders %d cols, overflow %d", w, got, got-w)
 		}
