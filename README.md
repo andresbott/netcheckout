@@ -47,8 +47,8 @@ Running `netcheckout` with no arguments opens an interactive TUI for managing pr
 - `a` — add a profile
 - `e` — edit the selected profile
 - `d` — delete the selected profile (with confirmation)
-- `enter` — open the profile view for the selected profile (checkout/check-in/status/sync coming soon)
-- in the profile view: `↑`/`↓`/`w`/`s` select an action, `enter` runs it (coming soon), `esc` returns to the list
+- `enter` — reveal actions for the selected profile (checkout/check-in/status/sync coming soon)
+- with actions showing: `↑`/`↓`/`w`/`s` select an action, `enter` runs it (coming soon), `esc` returns to the list
 - in the add/edit dialog: `tab`/`↑`/`↓`/`←`/`→` move between fields, `enter`/`space` activates, `esc` cancels
 - in the delete-confirmation dialog: `tab`/`←`/`→` move between Delete/Cancel, `enter`/`space` activates, `y` deletes directly, `n`/`esc` cancels
 - `esc`/`q` — quit from the list

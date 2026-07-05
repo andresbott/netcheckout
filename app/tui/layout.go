@@ -31,12 +31,12 @@ func hint(k, label string) string {
 func renderFooter(width int) string {
 	parts := []string{
 		hint("a", "Add"), hint("e", "Edit"), hint("d", "Delete"),
-		hint("↵", "Open"), hint("q", "Quit"),
+		hint("↵", "Actions"), hint("q", "Quit"),
 	}
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
 }
 
-// renderProfileFooter is the profile view's bottom key-hint bar.
+// renderProfileFooter is the actions-substate bottom key-hint bar.
 func renderProfileFooter(width int) string {
 	parts := []string{
 		hint("↵", "Run"), hint("↑↓", "Select"), hint("esc", "Back"),

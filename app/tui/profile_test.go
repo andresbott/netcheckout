@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 func TestActionCursorMoves(t *testing.T) {
@@ -29,25 +28,16 @@ func TestActionCursorMoves(t *testing.T) {
 	}
 }
 
-func TestProfileViewShowsPanels(t *testing.T) {
+// TestActionsViewShowsPanels: once Actions is revealed, the unified view shows
+// both boxes' content plus the Activity placeholder.
+func TestActionsViewShowsPanels(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
 	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
-	m.profile = newProfileView("alpha")
-	view := m.profileView()
-	for _, want := range []string{"Details", "Actions", "File status", "alpha", "Checkout", "file status coming soon"} {
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	view := m.View()
+	for _, want := range []string{"Details", "Actions", "Activity", "alpha", "Checkout", "sync activity coming soon"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("profile view missing %q:\n%s", want, view)
-		}
-	}
-}
-
-func TestProfileViewFitsWindowWidth(t *testing.T) {
-	for _, w := range []int{80, 100, 120} {
-		m := newModel("/tmp/x.yaml", testConfig())
-		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
-		m.profile = newProfileView("alpha")
-		if got := lipgloss.Width(m.profileView()); got > w {
-			t.Errorf("width=%d: profile view renders %d cols, overflow %d", w, got, got-w)
+			t.Errorf("view missing %q:\n%s", want, view)
 		}
 	}
 }

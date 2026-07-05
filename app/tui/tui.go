@@ -18,7 +18,15 @@ const (
 	modeMain mode = iota
 	modeForm
 	modeConfirm
-	modeProfile
+)
+
+// mainSub selects what modeMain's top box shows. Enter (subList) reveals the
+// selected profile's actions; esc (subActions) returns to the list.
+type mainSub int
+
+const (
+	subList mainSub = iota
+	subActions
 )
 
 type model struct {
@@ -30,6 +38,7 @@ type model struct {
 	height       int
 	list         listModel
 	mode         mode
+	sub          mainSub
 	form         formModel
 	profile      profileModel
 	confirmName  string
@@ -113,14 +122,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateForm(msg)
 	case modeConfirm:
 		return m.updateConfirm(msg)
-	case modeProfile:
-		return m.updateProfile(msg)
 	default:
 		return m.updateMain(msg)
 	}
 }
 
 func (m model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.sub == subActions {
+		return m.updateProfile(msg)
+	}
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
@@ -167,7 +177,7 @@ func (m model) openForm(origName string, p config.Profile) (tea.Model, tea.Cmd) 
 
 func (m model) openProfile(name string) (tea.Model, tea.Cmd) {
 	m.profile = newProfileView(name)
-	m.mode = modeProfile
+	m.sub = subActions
 	return m, nil
 }
 
@@ -178,7 +188,7 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "esc":
-		m.mode = modeMain
+		m.sub = subList
 		return m, nil
 	case "up", "w":
 		m.profile.moveUp()
@@ -305,16 +315,16 @@ func (m model) View() string {
 		return m.overlayModal(m.form.View())
 	case modeConfirm:
 		return m.overlayModal(confirmModal(m.confirmName, m.confirmFocus, m.width))
-	case modeProfile:
-		return m.profileView()
 	default:
 		return m.mainView(false)
 	}
 }
 
-// mainView composes the header, the two panels, and the footer to exactly the
-// terminal size. When dim is true both panels render unfocused (used as the
-// dimmed backdrop behind a modal in Task 6).
+// mainView composes the header, the two columns, and the footer to exactly the
+// terminal size. The left column stacks a top box — the profile list, or (once
+// a profile's actions are revealed) the Actions menu — over Details; the right
+// column is the Activity placeholder. When dim is true the top box renders
+// unfocused (used as the dimmed backdrop behind a modal).
 func (m model) mainView(dim bool) string {
 	w, h := m.width, m.height
 	if w == 0 {
@@ -330,15 +340,39 @@ func (m model) mainView(dim bool) string {
 	}
 	rightW := w - leftW
 
-	name, _ := m.list.selected()
-	listBody := m.list.view(leftW-2, bodyH-2)
-	detailsBody := renderDetails(name, m.cfg.Profiles[name], rightW-2)
+	detailsH := 8
+	topH := bodyH - detailsH
+	if topH < 3 {
+		topH = 3
+		detailsH = bodyH - topH
+		if detailsH < 3 {
+			detailsH = 3
+		}
+	}
 
-	left := titledBox("Profiles", listBody, leftW, bodyH, !dim)
-	right := titledBox("Details", detailsBody, rightW, bodyH, false)
+	var topTitle, topBody, name string
+	if m.sub == subActions {
+		topTitle = "Actions"
+		topBody = renderActions(m.profile.cursor, leftW-2)
+		name = m.profile.name
+	} else {
+		topTitle = "Profiles"
+		topBody = m.list.view(leftW-2, topH-2)
+		name, _ = m.list.selected()
+	}
+	detailsBody := renderDetails(name, m.cfg.Profiles[name], leftW-2)
+
+	top := titledBox(topTitle, topBody, leftW, topH, !dim)
+	details := titledBox("Details", detailsBody, leftW, detailsH, false)
+	left := lipgloss.JoinVertical(lipgloss.Left, top, details)
+	right := titledBox("Activity", renderActivity(), rightW, bodyH, false)
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
-	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + renderFooter(w)
+	footer := renderFooter(w)
+	if m.sub == subActions {
+		footer = renderProfileFooter(w)
+	}
+	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + footer
 	if m.err != nil {
 		view += "\n" + errStyle.Render("save failed: "+m.err.Error())
 	}
