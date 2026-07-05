@@ -140,3 +140,24 @@ func TestExecRunTeeIsConcurrencySafe(t *testing.T) {
 		t.Errorf("tee = %q, want both \"out\" and \"err\" (6 bytes)", got)
 	}
 }
+
+func TestDiffMissingBinaryReturnsActionableError(t *testing.T) {
+	// Zero-value Syncer → nil run falls back to execRun; a bogus Bin makes the
+	// command fail to start (not an *exec.ExitError), so ExitCode stays 0 and the
+	// error message must surface the cause rather than "exit 0".
+	s := &Syncer{Bin: "netcheckout-no-such-rsync-binary"}
+	_, err := s.Diff(context.Background(), localJob(Pull))
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatalf("want *Error, got %T (%v)", err, err)
+	}
+	if e.Op != "diff" {
+		t.Errorf("Op = %q, want diff", e.Op)
+	}
+	if strings.Contains(e.Error(), "exit 0") {
+		t.Errorf("message = %q, should not say \"exit 0\"", e.Error())
+	}
+	if e.Err == nil {
+		t.Error("want wrapped cause in Err")
+	}
+}

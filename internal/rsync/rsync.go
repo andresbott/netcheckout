@@ -96,7 +96,12 @@ type Error struct {
 func (e *Error) Error() string {
 	msg := fmt.Sprintf("rsync %s: exit %d", e.Op, e.ExitCode)
 	if s := strings.TrimSpace(e.Stderr); s != "" {
-		msg += ": " + s
+		return msg + ": " + s
+	}
+	// No exit status and no stderr (e.g. rsync failed to start, such as a missing
+	// binary); surface the wrapped cause instead of a bare "exit 0".
+	if e.ExitCode == 0 && e.Err != nil {
+		return fmt.Sprintf("rsync %s: %v", e.Op, e.Err)
 	}
 	return msg
 }

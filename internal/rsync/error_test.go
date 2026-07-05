@@ -24,3 +24,14 @@ func TestErrorUnwrapReturnsWrapped(t *testing.T) {
 		t.Error("errors.Is(e, base) = false, want true")
 	}
 }
+
+func TestErrorSurfacesCauseWhenNoExitCode(t *testing.T) {
+	e := &Error{Op: "diff", Err: errors.New(`exec: "rsync": executable file not found in $PATH`)}
+	msg := e.Error()
+	if !strings.Contains(msg, "diff") || !strings.Contains(msg, "not found") {
+		t.Errorf("Error() = %q, want the op and the wrapped cause", msg)
+	}
+	if strings.Contains(msg, "exit 0") {
+		t.Errorf("Error() = %q, should not report \"exit 0\" for a start failure", msg)
+	}
+}

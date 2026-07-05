@@ -19,7 +19,9 @@ type runResult struct {
 }
 
 // Syncer runs rsync. The zero value is usable (Bin defaults to "rsync", the
-// runner to execRun); New returns a ready one.
+// runner to execRun); New returns a ready one. When Output is set, a Syncer's
+// methods are not safe to call concurrently: concurrent calls are not
+// serialized against a shared Output.
 type Syncer struct {
 	// Bin is the rsync binary. Empty means "rsync".
 	Bin string
