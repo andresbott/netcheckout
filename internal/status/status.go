@@ -74,3 +74,46 @@ func computeTarget(ctx context.Context, d Differ, t config.Target) (TargetStatus
 	}
 	return TargetStatus{Subpath: t.Subpath, Pull: pull, Push: push}, nil
 }
+
+// ProfileStatus is the status across every target of a profile.
+type ProfileStatus struct {
+	Targets []TargetStatus
+}
+
+// InSync reports whether every target of the profile is in sync.
+func (p ProfileStatus) InSync() bool {
+	for _, t := range p.Targets {
+		if !t.InSync() {
+			return false
+		}
+	}
+	return true
+}
+
+// Compute runs Pull and Push dry-run diffs for every target the profile
+// resolves to. It returns an error only for a real failure (the remote root
+// missing, invalid declared subpaths, or the differ itself erroring) --
+// finding differences is a normal result captured in the returned
+// ProfileStatus, not an error. On a mid-loop failure the targets computed so
+// far are still returned alongside the error.
+func Compute(ctx context.Context, d Differ, p config.Profile) (ProfileStatus, error) {
+	remoteRoot := config.ExpandRoot(p.RemoteRoot)
+	if info, err := os.Stat(remoteRoot); err != nil || !info.IsDir() {
+		return ProfileStatus{}, fmt.Errorf("remote root %s is not mounted", remoteRoot)
+	}
+
+	targets, err := p.Targets()
+	if err != nil {
+		return ProfileStatus{}, err
+	}
+
+	out := ProfileStatus{Targets: make([]TargetStatus, 0, len(targets))}
+	for _, t := range targets {
+		ts, err := computeTarget(ctx, d, t)
+		if err != nil {
+			return out, err
+		}
+		out.Targets = append(out.Targets, ts)
+	}
+	return out, nil
+}

@@ -3,6 +3,7 @@ package status
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -112,5 +113,80 @@ func TestTargetStatusLabel(t *testing.T) {
 	}
 	if got := (TargetStatus{Subpath: "notes/2024"}).Label(); got != "notes/2024" {
 		t.Errorf("Label() = %q, want notes/2024", got)
+	}
+}
+
+func TestComputeMultipleTargets(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	localA := filepath.Join(localRoot, "a")
+	if err := os.MkdirAll(localA, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	localB := filepath.Join(localRoot, "b") // left uncreated: never checked out
+
+	d := &fakeDiffer{diffs: map[string]map[rsync.Direction]rsync.Diff{
+		localA: {rsync.Pull: inSyncDiff(), rsync.Push: changesDiff("x.txt")},
+		localB: {rsync.Pull: changesDiff("y.txt")},
+	}}
+	p := config.Profile{LocalRoot: localRoot, RemoteRoot: remoteRoot, Subpaths: []string{"a", "b"}}
+
+	st, err := Compute(context.Background(), d, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Targets) != 2 {
+		t.Fatalf("Targets = %#v", st.Targets)
+	}
+	if st.InSync() {
+		t.Error("want not in sync overall")
+	}
+	if st.Targets[0].Subpath != "a" || st.Targets[0].InSync() {
+		t.Errorf("Targets[0] = %#v", st.Targets[0])
+	}
+	if st.Targets[1].Subpath != "b" || !st.Targets[1].LocalMissing {
+		t.Errorf("Targets[1] = %#v", st.Targets[1])
+	}
+}
+
+func TestComputeRemoteRootNotMounted(t *testing.T) {
+	localRoot := t.TempDir()
+	missingRemote := filepath.Join(t.TempDir(), "not-mounted")
+	p := config.Profile{LocalRoot: localRoot, RemoteRoot: missingRemote}
+	d := &fakeDiffer{}
+	_, err := Compute(context.Background(), d, p)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if got, want := err.Error(), "remote root "+missingRemote+" is not mounted"; got != want {
+		t.Errorf("err = %q, want %q", got, want)
+	}
+	if len(d.calls) != 0 {
+		t.Errorf("calls = %#v, want none (should fail before diffing)", d.calls)
+	}
+}
+
+func TestComputeInvalidSubpath(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	p := config.Profile{LocalRoot: localRoot, RemoteRoot: remoteRoot, Subpaths: []string{"../escape"}}
+	_, err := Compute(context.Background(), &fakeDiffer{}, p)
+	if err == nil {
+		t.Fatal("want error for subpath escaping root")
+	}
+}
+
+func TestProfileStatusInSyncAggregate(t *testing.T) {
+	build := func(secondPush rsync.Diff) ProfileStatus {
+		return ProfileStatus{Targets: []TargetStatus{
+			{Pull: inSyncDiff(), Push: inSyncDiff()},
+			{Subpath: "a", Pull: inSyncDiff(), Push: secondPush},
+		}}
+	}
+	if !build(inSyncDiff()).InSync() {
+		t.Error("want in sync when every target is in sync")
+	}
+	if build(changesDiff("z.txt")).InSync() {
+		t.Error("want not in sync when any target differs")
 	}
 }
