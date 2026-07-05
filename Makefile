@@ -40,8 +40,12 @@ coverage: ## check ./internal/... test coverage meets the threshold
 	done; \
 	exit $$fail
 
+.PHONY: e2e
+e2e: ## run end-to-end binary lifecycle tests (builds a temp binary, requires rsync)
+	@go test -tags e2e ./zarf/e2e/... -v -count=1
+
 .PHONY: verify
-verify: test license-check lint benchmark coverage ## run the full verification suite
+verify: test license-check lint benchmark coverage e2e ## run the full verification suite
 
 #==========================================================================================
 ##@ Running
