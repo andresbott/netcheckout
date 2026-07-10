@@ -404,7 +404,7 @@ func (m model) mainView(dim bool) string {
 		topBody = m.list.view(leftW-2, topH-2)
 		name, _ = m.list.selected()
 	}
-	detailsBody := renderDetails(name, m.cfg.Profiles[name], leftW-2)
+	detailsBody := renderDetails(name, m.cfg.Profiles[name], nil, leftW-2)
 
 	top := titledBox(topTitle, topBody, leftW, topH, !dim)
 	details := titledBox("Details", detailsBody, leftW, detailsH, false)

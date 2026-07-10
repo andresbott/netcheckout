@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -35,7 +36,7 @@ func TestHintUsesColonFormat(t *testing.T) {
 }
 
 func TestRenderDetailsShowsRoots(t *testing.T) {
-	d := renderDetails("photos", config.Profile{LocalRoot: "/home/me/pics", RemoteRoot: "/mnt/nas/pics"}, 40)
+	d := renderDetails("photos", config.Profile{LocalRoot: "/home/me/pics", RemoteRoot: "/mnt/nas/pics"}, nil, 40)
 	for _, want := range []string{"photos", "/home/me/pics", "/mnt/nas/pics"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("details missing %q:\n%s", want, d)
@@ -49,7 +50,7 @@ func TestRenderDetailsShowsSubpaths(t *testing.T) {
 		RemoteRoot: "/mnt/nas/pics",
 		Subpaths:   []string{"docs", "src/app"},
 	}
-	d := renderDetails("photos", p, 40)
+	d := renderDetails("photos", p, nil, 40)
 	for _, want := range []string{"Subpaths (2)", "docs", "src/app"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("details missing %q:\n%s", want, d)
@@ -58,8 +59,53 @@ func TestRenderDetailsShowsSubpaths(t *testing.T) {
 }
 
 func TestRenderDetailsWithoutSubpathsHasNoHeader(t *testing.T) {
-	d := renderDetails("photos", config.Profile{LocalRoot: "/home/me/pics", RemoteRoot: "/mnt/nas/pics"}, 40)
+	d := renderDetails("photos", config.Profile{LocalRoot: "/home/me/pics", RemoteRoot: "/mnt/nas/pics"}, nil, 40)
 	if strings.Contains(d, "Subpaths") {
 		t.Errorf("details should not mention subpaths when none are set:\n%s", d)
+	}
+}
+
+func TestRenderDetailsChecking(t *testing.T) {
+	d := renderDetails("photos", config.Profile{LocalRoot: "/l", RemoteRoot: "/r"}, nil, 40)
+	if !strings.Contains(d, "…") {
+		t.Errorf("nil result should render '…' marks:\n%s", d)
+	}
+}
+
+func TestRenderDetailsMarksRoots(t *testing.T) {
+	d := renderDetails("photos", config.Profile{LocalRoot: "/l", RemoteRoot: "/r"},
+		&sanity.Result{LocalRoot: true, RemoteRoot: false}, 40)
+	if !strings.Contains(d, "✓") {
+		t.Errorf("present local root should show ✓:\n%s", d)
+	}
+	if !strings.Contains(d, "✗") {
+		t.Errorf("missing remote root should show ✗:\n%s", d)
+	}
+}
+
+func TestRenderDetailsCheckoutStates(t *testing.T) {
+	base := config.Profile{LocalRoot: "/l", RemoteRoot: "/r"}
+	notOut := renderDetails("p", base, &sanity.Result{RemoteRoot: true, CheckedOut: false}, 40)
+	if !strings.Contains(notOut, "not checked out") {
+		t.Errorf("want 'not checked out':\n%s", notOut)
+	}
+	out := renderDetails("p", base, &sanity.Result{RemoteRoot: true, CheckedOut: true}, 40)
+	if !strings.Contains(out, "checked out") || strings.Contains(out, "not checked out") {
+		t.Errorf("want 'checked out' (not 'not checked out'):\n%s", out)
+	}
+	down := renderDetails("p", base, &sanity.Result{RemoteRoot: false}, 40)
+	if !strings.Contains(down, "? checkout") {
+		t.Errorf("unmounted remote should show '? checkout':\n%s", down)
+	}
+}
+
+func TestRenderDetailsSubpathMarks(t *testing.T) {
+	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r", Subpaths: []string{"a", "b"}}
+	res := &sanity.Result{RemoteRoot: true, Subpaths: []sanity.Subpath{{Path: "a", Exists: true}, {Path: "b", Exists: false}}}
+	d := renderDetails("p", p, res, 40)
+	for _, want := range []string{"Subpaths (2)", "a", "b", "✓", "✗"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("details missing %q:\n%s", want, d)
+		}
 	}
 }

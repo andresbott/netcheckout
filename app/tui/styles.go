@@ -10,6 +10,7 @@ import (
 var (
 	labelStyle = lipgloss.NewStyle().Faint(true)
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 )
 
 // --- Posting-style palette (256-colour). Only the colours/styles titledBox
