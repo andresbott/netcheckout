@@ -9,8 +9,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// profileActions are the operations the Actions box will offer once the
-// checkout engine exists. They are placeholders — selecting one does nothing yet.
+// profileActions are the operations the Actions box offers for a profile. Status
+// is wired to internal/status (see updateProfile); Checkout, Check-in, and Sync
+// remain placeholders until the checkout engine exists.
 var profileActions = []string{"Status", "Checkout", "Check-in", "Sync"}
 
 // profileModel is the state for the Actions box: which profile is open, which

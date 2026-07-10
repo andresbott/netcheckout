@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
 
 	"github.com/andresbott/netcheckout/app/metainfo"
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/rsync"
+	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -32,6 +35,7 @@ const (
 type model struct {
 	path         string
 	cfg          *config.Config
+	differ       status.Differ
 	version      string
 	identity     string
 	width        int
@@ -65,6 +69,7 @@ func newModel(path string, cfg *config.Config) model {
 		identity: identityString(cfg),
 		mode:     modeMain,
 		list:     newList(nil),
+		differ:   rsync.New(),
 	}
 	m.refreshList()
 	return m
@@ -115,6 +120,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		m.resize(ws)
+		return m, nil
+	}
+	if res, ok := msg.(statusResultMsg); ok {
+		m.applyStatusResult(res)
 		return m, nil
 	}
 	switch m.mode {
@@ -181,6 +190,42 @@ func (m model) openProfile(name string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// statusResultMsg carries a background Status compute back into Update. name
+// identifies the profile it ran for, so a stale result from a profile the user
+// has since left is ignored.
+type statusResultMsg struct {
+	name string
+	st   status.ProfileStatus
+	err  error
+}
+
+// statusCmd runs status.Compute off the UI thread and delivers the outcome as a
+// statusResultMsg.
+func statusCmd(d status.Differ, name string, p config.Profile) tea.Cmd {
+	return func() tea.Msg {
+		st, err := status.Compute(context.Background(), d, p)
+		return statusResultMsg{name: name, st: st, err: err}
+	}
+}
+
+// applyStatusResult stores a Status compute's outcome on the open profile. A
+// result is ignored unless the actions view is still showing that same profile,
+// so a slow compute can never overwrite newer state.
+func (m *model) applyStatusResult(res statusResultMsg) {
+	if m.sub != subActions || m.profile.name != res.name {
+		return
+	}
+	m.profile.checking = false
+	if res.err != nil {
+		m.profile.err = res.err
+		m.profile.result = nil
+		return
+	}
+	m.profile.err = nil
+	st := res.st
+	m.profile.result = &st
+}
+
 func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -197,7 +242,13 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profile.moveDown()
 		return m, nil
 	case "enter":
-		// actions are not wired to the (nonexistent) checkout engine yet — no-op.
+		if profileActions[m.profile.cursor] == "Status" {
+			m.profile.checking = true
+			m.profile.err = nil
+			m.profile.result = nil
+			return m, statusCmd(m.differ, m.profile.name, m.cfg.Profiles[m.profile.name])
+		}
+		// the other actions are not wired to the (nonexistent) checkout engine yet.
 		return m, nil
 	}
 	return m, nil
