@@ -8,7 +8,7 @@ import (
 
 // profileActions are the operations the Actions box will offer once the
 // checkout engine exists. They are placeholders — selecting one does nothing yet.
-var profileActions = []string{"Checkout", "Check-in", "Status", "Sync"}
+var profileActions = []string{"Status", "Checkout", "Check-in", "Sync"}
 
 // profileModel is the state for the Actions box: which profile is open and
 // which action row is selected. The profile's roots are looked up fresh from

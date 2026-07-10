@@ -41,3 +41,11 @@ func TestActionsViewShowsPanels(t *testing.T) {
 		}
 	}
 }
+
+// TestStatusActionIsFirst: Status is the first (default-selected) action, so
+// opening a profile lands the cursor on it.
+func TestStatusActionIsFirst(t *testing.T) {
+	if profileActions[0] != "Status" {
+		t.Fatalf("profileActions[0] = %q, want %q", profileActions[0], "Status")
+	}
+}
