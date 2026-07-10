@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
+	"github.com/andresbott/netcheckout/internal/rsync"
+	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -10,12 +13,16 @@ import (
 // checkout engine exists. They are placeholders — selecting one does nothing yet.
 var profileActions = []string{"Status", "Checkout", "Check-in", "Sync"}
 
-// profileModel is the state for the Actions box: which profile is open and
-// which action row is selected. The profile's roots are looked up fresh from
-// cfg at render time, so only the name is stored here.
+// profileModel is the state for the Actions box: which profile is open, which
+// action row is selected, and the outcome of the most recent Status run. The
+// profile's roots are looked up fresh from cfg at render time, so only the name
+// is stored here.
 type profileModel struct {
-	name   string
-	cursor int
+	name     string
+	cursor   int
+	checking bool                  // a Status compute is in flight
+	result   *status.ProfileStatus // last successful Status result; nil until run
+	err      error                 // last Status error; nil if none
 }
 
 func newProfileView(name string) profileModel { return profileModel{name: name} }
@@ -55,4 +62,64 @@ func renderActions(cursor, width int) string {
 // engine exists. titledBox clips it to the panel width.
 func renderActivity() string {
 	return helpTextStyle.Render("sync activity coming soon")
+}
+
+// renderStatus is the Activity box body while a profile's actions are showing:
+// the idle placeholder before Status has run, an in-flight "Checking…", a styled
+// error, or the formatted result of the most recent Status run. titledBox clips
+// the body to the panel, so no manual width handling is needed here.
+func renderStatus(p profileModel) string {
+	switch {
+	case p.checking:
+		return p.name + "\n  Checking…"
+	case p.err != nil:
+		return p.name + "\n  " + errStyle.Render(p.err.Error())
+	case p.result != nil:
+		return statusBody(p.name, *p.result)
+	default:
+		return renderActivity()
+	}
+}
+
+// statusBody formats a computed ProfileStatus: the profile name, then per target
+// its label and the push/pull direction lines, each change prefixed with a mark.
+func statusBody(name string, st status.ProfileStatus) string {
+	var b strings.Builder
+	b.WriteString(name)
+	if st.InSync() {
+		b.WriteString("\n  in sync")
+		return b.String()
+	}
+	for _, t := range st.Targets {
+		b.WriteString("\n  " + t.Label())
+		if t.LocalMissing {
+			fmt.Fprintf(&b, "\n    not checked out locally (%d items)", len(t.Pull.Changes))
+			continue
+		}
+		writeDirection(&b, "push (local -> remote)", t.Push)
+		writeDirection(&b, "pull (remote -> local)", t.Pull)
+	}
+	return b.String()
+}
+
+func writeDirection(b *strings.Builder, label string, d rsync.Diff) {
+	if d.InSync {
+		fmt.Fprintf(b, "\n    %s: in sync", label)
+		return
+	}
+	fmt.Fprintf(b, "\n    %s: %d changes", label, len(d.Changes))
+	for _, c := range d.Changes {
+		fmt.Fprintf(b, "\n      %s %s", changeMark(c.Type), c.Path)
+	}
+}
+
+func changeMark(t rsync.ChangeType) string {
+	switch t {
+	case rsync.Created:
+		return "+"
+	case rsync.Deleted:
+		return "-"
+	default:
+		return "M"
+	}
 }

@@ -358,7 +358,11 @@ func (m model) mainView(dim bool) string {
 	top := titledBox(topTitle, topBody, leftW, topH, !dim)
 	details := titledBox("Details", detailsBody, leftW, detailsH, false)
 	left := lipgloss.JoinVertical(lipgloss.Left, top, details)
-	right := titledBox("Activity", renderActivity(), rightW, bodyH, false)
+	activity := renderActivity()
+	if m.sub == subActions {
+		activity = renderStatus(m.profile)
+	}
+	right := titledBox("Activity", activity, rightW, bodyH, false)
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	footer := renderFooter(w)
