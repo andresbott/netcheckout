@@ -103,6 +103,7 @@ func (m model) deleteConfirmedProfile() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.refreshList()
+	delete(m.checks, m.confirmName)
 	m.mode = modeMain
 	m.err = nil
 	return m, nil

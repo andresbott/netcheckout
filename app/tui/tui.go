@@ -9,6 +9,7 @@ import (
 	"github.com/andresbott/netcheckout/app/metainfo"
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/rsync"
+	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -36,6 +37,7 @@ type model struct {
 	path         string
 	cfg          *config.Config
 	differ       status.Differ
+	checks       map[string]*sanity.Result
 	version      string
 	identity     string
 	width        int
@@ -70,6 +72,7 @@ func newModel(path string, cfg *config.Config) model {
 		mode:     modeMain,
 		list:     newList(nil),
 		differ:   rsync.New(),
+		checks:   make(map[string]*sanity.Result),
 	}
 	m.refreshList()
 	return m
@@ -112,7 +115,13 @@ func (m *model) resize(ws tea.WindowSizeMsg) {
 	}
 }
 
-func (m model) Init() tea.Cmd { return nil }
+func (m model) Init() tea.Cmd {
+	cmds := make([]tea.Cmd, 0, len(m.cfg.Profiles))
+	for name, p := range m.cfg.Profiles {
+		cmds = append(cmds, sanityCmd(name, p))
+	}
+	return tea.Batch(cmds...)
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok && key.String() == "ctrl+c" {
@@ -124,6 +133,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if res, ok := msg.(statusResultMsg); ok {
 		m.applyStatusResult(res)
+		return m, nil
+	}
+	if res, ok := msg.(sanityResultMsg); ok {
+		r := res.result
+		m.checks[res.name] = &r
 		return m, nil
 	}
 	switch m.mode {
@@ -226,6 +240,19 @@ func (m *model) applyStatusResult(res statusResultMsg) {
 	m.profile.result = &st
 }
 
+// sanityResultMsg carries one profile's lightweight sanity check back into Update.
+type sanityResultMsg struct {
+	name   string
+	result sanity.Result
+}
+
+// sanityCmd runs the stat-only sanity.Check off the UI thread.
+func sanityCmd(name string, p config.Profile) tea.Cmd {
+	return func() tea.Msg {
+		return sanityResultMsg{name: name, result: sanity.Check(p)}
+	}
+}
+
 func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -310,6 +337,7 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 	prev := cloneProfiles(m.cfg.Profiles)
 	if m.form.origName != "" && m.form.origName != name {
 		delete(m.cfg.Profiles, m.form.origName)
+		delete(m.checks, m.form.origName)
 	}
 	m.cfg.Profiles[name] = p
 	if err := commitProfiles(m.path, m.cfg, prev); err != nil {
@@ -319,7 +347,7 @@ func (m model) submitForm() (tea.Model, tea.Cmd) {
 	m.refreshList()
 	m.mode = modeMain
 	m.err = nil
-	return m, nil
+	return m, sanityCmd(name, p)
 }
 
 // cloneProfiles returns a shallow copy of p so a mutation can be snapshotted
@@ -404,7 +432,7 @@ func (m model) mainView(dim bool) string {
 		topBody = m.list.view(leftW-2, topH-2)
 		name, _ = m.list.selected()
 	}
-	detailsBody := renderDetails(name, m.cfg.Profiles[name], nil, leftW-2)
+	detailsBody := renderDetails(name, m.cfg.Profiles[name], m.checks[name], leftW-2)
 
 	top := titledBox(topTitle, topBody, leftW, topH, !dim)
 	details := titledBox("Details", detailsBody, leftW, detailsH, false)
