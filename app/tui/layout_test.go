@@ -67,8 +67,8 @@ func TestRenderDetailsWithoutSubpathsHasNoHeader(t *testing.T) {
 
 func TestRenderDetailsChecking(t *testing.T) {
 	d := renderDetails("photos", config.Profile{LocalRoot: "/l", RemoteRoot: "/r"}, nil, 40)
-	if !strings.Contains(d, "…") {
-		t.Errorf("nil result should render '…' marks:\n%s", d)
+	if !strings.Contains(d, "… checkout") {
+		t.Errorf("nil result should render '… checkout' (checkoutLine pending):\n%s", d)
 	}
 }
 
@@ -100,12 +100,35 @@ func TestRenderDetailsCheckoutStates(t *testing.T) {
 }
 
 func TestRenderDetailsSubpathMarks(t *testing.T) {
-	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r", Subpaths: []string{"a", "b"}}
-	res := &sanity.Result{RemoteRoot: true, Subpaths: []sanity.Subpath{{Path: "a", Exists: true}, {Path: "b", Exists: false}}}
+	// "zeta"/"qux" (rather than "a"/"b") so the assertions can't be satisfied by
+	// the "Subpaths" header word itself, which contains both "a" and "b".
+	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r", Subpaths: []string{"zeta", "qux"}}
+	res := &sanity.Result{RemoteRoot: true, Subpaths: []sanity.Subpath{{Path: "zeta", Exists: true}, {Path: "qux", Exists: false}}}
 	d := renderDetails("p", p, res, 40)
-	for _, want := range []string{"Subpaths (2)", "a", "b", "✓", "✗"} {
+	for _, want := range []string{"Subpaths (2)", "zeta", "qux", "✓", "✗"} {
 		if !strings.Contains(d, want) {
 			t.Errorf("details missing %q:\n%s", want, d)
 		}
+	}
+}
+
+// TestRenderDetailsSubpathMarksPendingAndUnknown covers subpathMark's other two
+// branches (a pending nil result, and a result whose remote isn't mounted),
+// which TestRenderDetailsSubpathMarks and TestRenderDetailsChecking don't
+// exercise. The assertions key off "<mark> <subpath name>" rather than a bare
+// "…"/"?" so they can only pass if subpathMark itself produced that mark —
+// existMark and checkoutLine emit the same glyphs elsewhere in renderDetails'
+// output, which would make a bare-glyph check pass vacuously.
+func TestRenderDetailsSubpathMarksPendingAndUnknown(t *testing.T) {
+	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r", Subpaths: []string{"zeta", "qux"}}
+
+	pending := renderDetails("p", p, nil, 40)
+	if !strings.Contains(pending, "… zeta") || !strings.Contains(pending, "… qux") {
+		t.Errorf("nil result should render pending '…' marks on each subpath line:\n%s", pending)
+	}
+
+	unknown := renderDetails("p", p, &sanity.Result{RemoteRoot: false}, 40)
+	if !strings.Contains(unknown, "? zeta") || !strings.Contains(unknown, "? qux") {
+		t.Errorf("unmounted remote should render '?' marks on each subpath line:\n%s", unknown)
 	}
 }

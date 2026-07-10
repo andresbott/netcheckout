@@ -12,8 +12,26 @@ import (
 
 func TestInitDispatchesChecks(t *testing.T) {
 	m := newModel("/tmp/x.yaml", testConfig())
-	if m.Init() == nil {
+	cmd := m.Init()
+	if cmd == nil {
 		t.Fatal("Init should return a command batch when profiles exist")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("Init's cmd produced %T, want tea.BatchMsg", msg)
+	}
+	if len(batch) != 2 {
+		t.Errorf("batch has %d commands, want 2 (one sanityCmd per profile)", len(batch))
+	}
+}
+
+// TestInitEmptyConfigReturnsNil guards Init's zero-profile edge: tea.Batch()
+// with no commands collapses to nil rather than an inert empty batch.
+func TestInitEmptyConfigReturnsNil(t *testing.T) {
+	m := newModel("/tmp/x.yaml", &config.Config{Profiles: map[string]config.Profile{}})
+	if cmd := m.Init(); cmd != nil {
+		t.Error("Init with no profiles should return nil")
 	}
 }
 
@@ -59,5 +77,68 @@ func TestDeleteDropsCheck(t *testing.T) {
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")}) // confirm
 	if _, ok := m.checks["alpha"]; ok {
 		t.Error("deleting a profile should drop its sanity cache entry")
+	}
+}
+
+// TestSubmitFormReturnsSanityRecheckCmd covers submitForm's post-save re-check:
+// a successful save must return sanityCmd for the freshly saved profile, not a
+// nil command, or the Details pane goes stale (still showing the pre-edit
+// result) after an edit.
+func TestSubmitFormReturnsSanityRecheckCmd(t *testing.T) {
+	m := newModel(filepath.Join(t.TempDir(), "c.yaml"), testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")}) // edit "alpha" (sorts first)
+	if m.mode != modeForm {
+		t.Fatalf("want modeForm after e, got %d", m.mode)
+	}
+	m = tabToKind(t, m, slotSave)
+
+	nm, cmd := m.Update(spaceKey) // drive Save directly to capture the returned cmd
+	m, ok := nm.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", nm)
+	}
+	if m.mode != modeMain {
+		t.Fatalf("a valid save should return to modeMain, got %d", m.mode)
+	}
+	if cmd == nil {
+		t.Fatal("a successful save should return the sanity re-check command, not nil")
+	}
+	msg := cmd()
+	res, ok := msg.(sanityResultMsg)
+	if !ok {
+		t.Fatalf("save's returned cmd produced %T, want sanityResultMsg", msg)
+	}
+	if res.name != "alpha" {
+		t.Errorf("re-check result name = %q, want alpha", res.name)
+	}
+}
+
+// TestSubmitFormRenameDropsOldCheck covers submitForm's rename branch: renaming
+// a profile must drop the old name's cached sanity result, or a stale check for
+// a name that no longer exists in the config would linger in m.checks forever.
+func TestSubmitFormRenameDropsOldCheck(t *testing.T) {
+	m := newModel(filepath.Join(t.TempDir(), "c.yaml"), testConfig())
+	m.checks["alpha"] = &sanity.Result{LocalRoot: true, RemoteRoot: true}
+
+	// White-box setup (mirrors form_test.go's TestEditRenameReplacesKey): build
+	// the edit form with newForm, the same constructor the "e" key uses, and
+	// mutate its name input directly rather than typing over the prefilled value.
+	m.mode = modeForm
+	m.form = newForm("alpha", m.cfg.Profiles["alpha"])
+	m.form.inputs[0].SetValue("gamma")
+	m = tabToKind(t, m, slotSave)
+	m = update(t, m, spaceKey)
+
+	if m.mode != modeMain {
+		t.Fatalf("a valid save should return to modeMain, got %d", m.mode)
+	}
+	if _, exists := m.cfg.Profiles["alpha"]; exists {
+		t.Error("old profile key should be gone after rename")
+	}
+	if _, exists := m.cfg.Profiles["gamma"]; !exists {
+		t.Error("new profile key should exist after rename")
+	}
+	if _, ok := m.checks["alpha"]; ok {
+		t.Error("renaming a profile should drop the old name's sanity cache entry")
 	}
 }
