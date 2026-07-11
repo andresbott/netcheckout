@@ -173,6 +173,11 @@ This local state also answers "what does this machine hold" without scanning rem
 marker/lock reconciliation inside `status` remains a separate, still-open question (§13 Q9);
 `status` today only diffs content via `rsync` dry-run.
 
+The manifest tracks **regular files only**. A symlink is copied by `rsync` at checkout like
+anything else, but `Snapshot`/`Scan` skip it, so it is never recorded in the baseline and never
+reconciled by `sync`/`checkin` — a symlink created locally is not pushed. It follows that `--clean`
+(§9), which removes the entire local working copy, would silently discard any such symlink.
+
 ---
 
 ## 7. Commands / features
