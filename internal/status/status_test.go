@@ -125,6 +125,14 @@ func TestComputeMultipleTargets(t *testing.T) {
 	}
 	localB := filepath.Join(localRoot, "b") // left uncreated: never checked out
 
+	// Mark the profile checked out (aggregate: one target's marker is enough).
+	if err := os.MkdirAll(filepath.Join(remoteRoot, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remoteRoot, "a", ".netcheckout.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	d := &fakeDiffer{diffs: map[string]map[rsync.Direction]rsync.Diff{
 		localA: {rsync.Pull: inSyncDiff(), rsync.Push: changesDiff("x.txt")},
 		localB: {rsync.Pull: changesDiff("y.txt")},
@@ -188,5 +196,49 @@ func TestProfileStatusInSyncAggregate(t *testing.T) {
 	}
 	if build(changesDiff("z.txt")).InSync() {
 		t.Error("want not in sync when any target differs")
+	}
+}
+
+func TestComputeStopsEarlyWhenNotCheckedOut(t *testing.T) {
+	remoteRoot := t.TempDir()
+	p := config.Profile{LocalRoot: t.TempDir(), RemoteRoot: remoteRoot}
+	d := &fakeDiffer{}
+	st, err := Compute(context.Background(), d, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CheckedOut {
+		t.Error("want CheckedOut false when no marker is present")
+	}
+	if len(st.Targets) != 0 {
+		t.Errorf("want no targets, got %#v", st.Targets)
+	}
+	if len(d.calls) != 0 {
+		t.Errorf("want zero differ calls, got %#v", d.calls)
+	}
+}
+
+func TestComputeRunsWhenCheckedOut(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remoteRoot, ".netcheckout.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := &fakeDiffer{diffs: map[string]map[rsync.Direction]rsync.Diff{
+		localRoot: {rsync.Pull: inSyncDiff(), rsync.Push: inSyncDiff()},
+	}}
+	p := config.Profile{LocalRoot: localRoot, RemoteRoot: remoteRoot}
+	st, err := Compute(context.Background(), d, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.CheckedOut {
+		t.Error("want CheckedOut true when a marker is present")
+	}
+	if len(st.Targets) != 1 {
+		t.Fatalf("want 1 target, got %#v", st.Targets)
+	}
+	if len(d.calls) != 2 {
+		t.Errorf("want 2 differ calls (pull+push), got %d", len(d.calls))
 	}
 }

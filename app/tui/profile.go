@@ -87,6 +87,10 @@ func renderStatus(p profileModel) string {
 func statusBody(name string, st status.ProfileStatus) string {
 	var b strings.Builder
 	b.WriteString(name)
+	if !st.CheckedOut {
+		b.WriteString("\n  not checked out")
+		return b.String()
+	}
 	if st.InSync() {
 		b.WriteString("\n  in sync")
 		return b.String()

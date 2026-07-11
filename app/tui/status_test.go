@@ -50,7 +50,7 @@ func TestActivityShowsError(t *testing.T) {
 
 func TestActivityShowsStatusResult(t *testing.T) {
 	m := openActions(t, testConfig())
-	m.profile.result = &status.ProfileStatus{Targets: []status.TargetStatus{{
+	m.profile.result = &status.ProfileStatus{CheckedOut: true, Targets: []status.TargetStatus{{
 		Push: rsync.Diff{Changes: []rsync.Change{{Path: "notes.txt", Type: rsync.Modified}}},
 		Pull: rsync.Diff{InSync: true},
 	}}}
@@ -70,7 +70,7 @@ func TestActivityStatusFitsWidth(t *testing.T) {
 		m := newModel("/tmp/x.yaml", testConfig())
 		m = update(t, m, tea.WindowSizeMsg{Width: w, Height: 30})
 		m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-		m.profile.result = &status.ProfileStatus{Targets: []status.TargetStatus{{
+		m.profile.result = &status.ProfileStatus{CheckedOut: true, Targets: []status.TargetStatus{{
 			Push: rsync.Diff{Changes: []rsync.Change{{Path: long, Type: rsync.Created}}},
 			Pull: rsync.Diff{InSync: true},
 		}}}
@@ -103,6 +103,9 @@ func mountedConfig(t *testing.T) *config.Config {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(filepath.Join(remote, ".netcheckout.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	return &config.Config{Profiles: map[string]config.Profile{
 		"alpha": {LocalRoot: local, RemoteRoot: remote},
@@ -189,5 +192,13 @@ func TestStaleStatusResultIgnored(t *testing.T) {
 	m = update(t, m, stale)
 	if m.profile.err != nil {
 		t.Fatal("a result for another profile must be ignored")
+	}
+}
+
+func TestActivityShowsNotCheckedOut(t *testing.T) {
+	m := openActions(t, testConfig())
+	m.profile.result = &status.ProfileStatus{CheckedOut: false}
+	if !strings.Contains(m.View(), "not checked out") {
+		t.Errorf("Activity should show 'not checked out':\n%s", m.View())
 	}
 }

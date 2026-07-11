@@ -9,6 +9,7 @@ import (
 
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/rsync"
+	"github.com/andresbott/netcheckout/internal/sanity"
 )
 
 // Differ is satisfied by *rsync.Syncer; lets tests inject a fake.
@@ -77,7 +78,8 @@ func computeTarget(ctx context.Context, d Differ, t config.Target) (TargetStatus
 
 // ProfileStatus is the status across every target of a profile.
 type ProfileStatus struct {
-	Targets []TargetStatus
+	CheckedOut bool // a checkout marker is present; false means Compute stopped early and Targets is empty
+	Targets    []TargetStatus
 }
 
 // InSync reports whether every target of the profile is in sync.
@@ -107,7 +109,15 @@ func Compute(ctx context.Context, d Differ, p config.Profile) (ProfileStatus, er
 		return ProfileStatus{}, err
 	}
 
-	out := ProfileStatus{Targets: make([]TargetStatus, 0, len(targets))}
+	// A profile that is not checked out has nothing to diff: stop early rather
+	// than running rsync. "checked out" is the marker check from internal/sanity
+	// (aggregated across targets). Ordering matters: the remote-mounted and
+	// invalid-subpath errors above still take precedence.
+	if !sanity.Check(p).CheckedOut {
+		return ProfileStatus{CheckedOut: false}, nil
+	}
+
+	out := ProfileStatus{Targets: make([]TargetStatus, 0, len(targets)), CheckedOut: true}
 	for _, t := range targets {
 		ts, err := computeTarget(ctx, d, t)
 		if err != nil {

@@ -46,6 +46,10 @@ func newStatusCmdWithDiffer(cfgPath *string, d status.Differ) *cobra.Command {
 
 func printStatus(w io.Writer, name string, p config.Profile, st status.ProfileStatus) {
 	_, _ = fmt.Fprintf(w, "%s (local: %s, remote: %s)\n", name, p.LocalRoot, p.RemoteRoot)
+	if !st.CheckedOut {
+		_, _ = fmt.Fprintln(w, "  not checked out")
+		return
+	}
 	if st.InSync() {
 		_, _ = fmt.Fprintln(w, "  in sync")
 		return

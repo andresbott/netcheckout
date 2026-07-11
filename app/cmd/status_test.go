@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,6 +65,7 @@ func TestStatusCommandUnknownProfile(t *testing.T) {
 func TestStatusCommandPrintsInSync(t *testing.T) {
 	remoteRoot := t.TempDir()
 	localRoot := t.TempDir()
+	writeCheckoutMarker(t, remoteRoot)
 	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
 		"work": {LocalRoot: localRoot, RemoteRoot: remoteRoot},
 	})
@@ -86,6 +89,7 @@ func TestStatusCommandPrintsInSync(t *testing.T) {
 func TestStatusCommandPrintsDifferences(t *testing.T) {
 	remoteRoot := t.TempDir()
 	localRoot := t.TempDir()
+	writeCheckoutMarker(t, remoteRoot)
 	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
 		"work": {LocalRoot: localRoot, RemoteRoot: remoteRoot},
 	})
@@ -130,4 +134,35 @@ func TestStatusRegisteredOnRoot(t *testing.T) {
 		}
 	}
 	t.Fatal("status command not registered on root")
+}
+
+func writeCheckoutMarker(t *testing.T, remoteRoot string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(remoteRoot, ".netcheckout.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStatusCommandReportsNotCheckedOut(t *testing.T) {
+	remoteRoot := t.TempDir()
+	localRoot := t.TempDir()
+	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
+		"work": {LocalRoot: localRoot, RemoteRoot: remoteRoot},
+	})
+	// No marker: the profile is not checked out, so the differ must never run.
+	d := fakeDiffer{err: errors.New("differ must not be called when not checked out")}
+	cmd := newStatusCmdWithDiffer(&cfgPath, d)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"work"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "not checked out") {
+		t.Fatalf("want 'not checked out', got:\n%s", out)
+	}
+	if strings.Contains(out, "in sync") {
+		t.Fatalf("diffs should not run when not checked out:\n%s", out)
+	}
 }
