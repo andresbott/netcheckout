@@ -49,6 +49,8 @@ func newRootCommand() *cobra.Command {
 		newListCmd(&cfgPath),
 		newStatusCmd(&cfgPath),
 		newCheckoutCmd(&cfgPath),
+		newSyncCmd(&cfgPath),
+		newCheckinCmd(&cfgPath),
 	)
 
 	return cmd
