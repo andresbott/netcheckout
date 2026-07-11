@@ -37,12 +37,22 @@ func renderFooter(width int) string {
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
 }
 
-// renderProfileFooter is the actions-substate bottom key-hint bar.
-func renderProfileFooter(width int) string {
+// renderProfileFooter is the actions-substate bottom key-hint bar. force and
+// clean reflect the current toggle state for the mutating actions.
+func renderProfileFooter(width int, force, clean bool) string {
 	parts := []string{
 		hint("↵", "Run"), hint("↑↓", "Select"), hint("esc", "Back"),
+		hint("f", "force:"+onOff(force)), hint("c", "clean:"+onOff(clean)),
 	}
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
+}
+
+// onOff renders a toggle's boolean state as "on"/"off" for the footer hints.
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // renderDetails is the profile summary body: the two roots and (when scoped) the

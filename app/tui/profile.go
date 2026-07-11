@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/andresbott/netcheckout/internal/lifecycle"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/charmbracelet/x/ansi"
@@ -19,11 +20,14 @@ var profileActions = []string{"Status", "Checkout", "Check-in", "Sync"}
 // profile's roots are looked up fresh from cfg at render time, so only the name
 // is stored here.
 type profileModel struct {
-	name     string
-	cursor   int
-	checking bool                  // a Status compute is in flight
-	result   *status.ProfileStatus // last successful Status result; nil until run
-	err      error                 // last Status error; nil if none
+	name         string
+	cursor       int
+	checking     bool                  // a Status compute is in flight
+	result       *status.ProfileStatus // last successful Status result; nil until run
+	err          error                 // last Status error; nil if none
+	acting       bool                  // a mutating action (Checkout) is in flight
+	actionReport *lifecycle.Report     // last successful action's outcome; nil until run
+	actionErr    error                 // last action error; nil if none
 }
 
 func newProfileView(name string) profileModel { return profileModel{name: name} }
@@ -71,6 +75,12 @@ func renderActivity() string {
 // the body to the panel, so no manual width handling is needed here.
 func renderStatus(p profileModel) string {
 	switch {
+	case p.acting:
+		return p.name + "\n  Working…"
+	case p.actionErr != nil:
+		return p.name + "\n  " + errStyle.Render(p.actionErr.Error())
+	case p.actionReport != nil:
+		return actionBody(p.name, *p.actionReport)
 	case p.checking:
 		return p.name + "\n  Checking…"
 	case p.err != nil:
@@ -80,6 +90,23 @@ func renderStatus(p profileModel) string {
 	default:
 		return renderActivity()
 	}
+}
+
+// actionBody formats a completed mutating action's Report: conflicts (nothing
+// written) take precedence, otherwise the action name and how many items were
+// pulled.
+func actionBody(name string, rep lifecycle.Report) string {
+	var b strings.Builder
+	b.WriteString(name)
+	if len(rep.Conflicts) > 0 {
+		b.WriteString("\n  conflicts — nothing written:")
+		for _, c := range rep.Conflicts {
+			fmt.Fprintf(&b, "\n    ! %s", c)
+		}
+		return b.String()
+	}
+	fmt.Fprintf(&b, "\n  %s: %d pulled", rep.Action, len(rep.Pulled))
+	return b.String()
 }
 
 // statusBody formats a computed ProfileStatus: the profile name, then per target

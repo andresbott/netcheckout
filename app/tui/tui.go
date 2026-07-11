@@ -8,6 +8,7 @@ import (
 	"github.com/andresbott/netcheckout/app/metainfo"
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
+	"github.com/andresbott/netcheckout/internal/lifecycle"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
@@ -50,6 +51,10 @@ type model struct {
 	confirmName  string
 	confirmFocus confirmFocus
 	err          error
+	id           ident.Ident
+	runner       lifecycle.Runner
+	actForce     bool
+	actClean     bool
 }
 
 // Run loads the config at path and starts the interactive TUI.
@@ -64,6 +69,7 @@ func Run(path string) error {
 }
 
 func newModel(path string, cfg *config.Config) model {
+	id, _ := ident.Resolve(cfg)
 	m := model{
 		path:     path,
 		cfg:      cfg,
@@ -73,6 +79,8 @@ func newModel(path string, cfg *config.Config) model {
 		list:     newList(nil),
 		differ:   rsync.New(),
 		checks:   make(map[string]*sanity.Result),
+		id:       id,
+		runner:   lifecycle.Runner{Syncer: rsync.New(), ToolVersion: metainfo.Version},
 	}
 	m.refreshList()
 	return m
@@ -131,6 +139,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		r := res.result
 		m.checks[res.name] = &r
 		return m, nil
+	}
+	if res, ok := msg.(actionResultMsg); ok {
+		m.applyActionResult(res)
+		// Refresh the sanity mark since the marker changed.
+		return m, sanityCmd(res.name, m.cfg.Profiles[res.name])
 	}
 	switch m.mode {
 	case modeForm:
@@ -245,6 +258,38 @@ func sanityCmd(name string, p config.Profile) tea.Cmd {
 	}
 }
 
+// actionResultMsg carries a mutating action's outcome back into Update, guarded
+// by profile name so a stale result from a since-left profile is ignored.
+type actionResultMsg struct {
+	name   string
+	report lifecycle.Report
+	err    error
+}
+
+// checkoutCmd runs lifecycle.Runner.Checkout off the UI thread and delivers the
+// outcome as an actionResultMsg.
+func checkoutCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
+	return func() tea.Msg {
+		rep, err := r.Checkout(context.Background(), name, p, id, "", opts)
+		return actionResultMsg{name: name, report: rep, err: err}
+	}
+}
+
+// applyActionResult stores a mutating action's outcome on the open profile. A
+// result is ignored unless the actions view is still showing that same profile,
+// so a slow run can never overwrite newer state.
+func (m *model) applyActionResult(res actionResultMsg) {
+	if m.sub != subActions || m.profile.name != res.name {
+		return
+	}
+	m.profile.acting = false
+	m.profile.actionErr = res.err
+	if res.err == nil {
+		rep := res.report
+		m.profile.actionReport = &rep
+	}
+}
+
 func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -260,14 +305,27 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "down", "s":
 		m.profile.moveDown()
 		return m, nil
+	case "f":
+		m.actForce = !m.actForce
+		return m, nil
+	case "c":
+		m.actClean = !m.actClean
+		return m, nil
 	case "enter":
-		if profileActions[m.profile.cursor] == "Status" {
+		switch profileActions[m.profile.cursor] {
+		case "Status":
 			m.profile.checking = true
 			m.profile.err = nil
 			m.profile.result = nil
 			return m, statusCmd(m.differ, m.profile.name, m.cfg.Profiles[m.profile.name])
+		case "Checkout":
+			m.profile.acting = true
+			m.profile.actionErr = nil
+			m.profile.actionReport = nil
+			opts := lifecycle.Options{Force: m.actForce, Clean: m.actClean}
+			return m, checkoutCmd(m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], opts)
 		}
-		// the other actions are not wired to the (nonexistent) checkout engine yet.
+		// Check-in and Sync are wired in Plan B (M4).
 		return m, nil
 	}
 	return m, nil
@@ -438,7 +496,7 @@ func (m model) mainView(dim bool) string {
 
 	footer := renderFooter(w)
 	if m.sub == subActions {
-		footer = renderProfileFooter(w)
+		footer = renderProfileFooter(w, m.actForce, m.actClean)
 	}
 	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + footer
 	if m.err != nil {
