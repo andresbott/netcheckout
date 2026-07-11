@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/andresbott/netcheckout/internal/baseline"
 	"github.com/andresbott/netcheckout/internal/config"
@@ -63,10 +64,8 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 	}
 	rep.Conflicts = plan.Conflicts
 
-	if len(plan.Conflicts) > 0 && !opts.Force {
-		return nil, nil, &reconcile.ConflictError{Paths: plan.Conflicts}
-	}
-
+	// Dry-run always exits clean: report the plan (and any would-be conflicts)
+	// without writing anything, even when the plan itself has conflicts.
 	if opts.DryRun {
 		rep.Pulled = plan.Pull
 		rep.Pushed = plan.Push
@@ -74,6 +73,15 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 		rep.RemovedLocal = plan.LocalDeletes
 		return m, b, nil
 	}
+
+	if len(plan.Conflicts) > 0 && !opts.Force {
+		return nil, nil, &reconcile.ConflictError{Paths: plan.Conflicts}
+	}
+
+	// Nothing stopped us: either there were no conflicts, or --force resolved
+	// them (local-wins, folded into the pushes by Apply). Clear rep.Conflicts
+	// so the report reflects what actually happened, not what was classified.
+	rep.Conflicts = nil
 
 	applied, err := reconcile.Apply(ctx, r.Syncer, localRoot, remoteRoot, plan, opts.Force)
 	if err != nil {
@@ -89,17 +97,54 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 	rep.RemovedLocal = applied.RemovedLocal
 
 	// Re-snapshot the baseline to the reconciled state and bump last_sync_at.
+	// Only the reconciled (possibly relpath-narrowed) scope is re-scanned; the
+	// fresh scoped snapshot is merged into the existing baseline rather than
+	// replacing it wholesale, so out-of-scope entries (files outside relpaths
+	// on a scoped sync) are left untouched instead of being overwritten with
+	// their current — possibly un-synced — local content.
 	now := r.now()
-	files, err := baseline.Snapshot(localRoot, b.Relpaths)
+	files, err := baseline.Snapshot(localRoot, relpaths)
 	if err != nil {
 		return nil, nil, err
 	}
-	nb := &baseline.Baseline{Profile: name, Relpaths: b.Relpaths, Files: files, LastSyncAt: now}
+	mergedFiles := mergeScopedSnapshot(b.Files, files, relpaths)
+	nb := &baseline.Baseline{Profile: name, Relpaths: b.Relpaths, Files: mergedFiles, LastSyncAt: now}
 	if err := baseline.Save(nb); err != nil {
 		return nil, nil, err
 	}
 	m.LastSyncAt = now
 	return m, nb, nil
+}
+
+// mergeScopedSnapshot merges a freshly-scanned scoped snapshot into an existing
+// baseline manifest: every existing key that falls under any of relpaths is
+// dropped (so in-scope deletions are reflected), then the scoped snapshot's
+// keys are overlaid. Keys outside relpaths are left untouched. When relpaths
+// covers the whole tree (e.g. ["."]), this is equivalent to replacing existing
+// wholesale with scoped.
+func mergeScopedSnapshot(existing, scoped map[string]baseline.FileState, relpaths []string) map[string]baseline.FileState {
+	merged := make(map[string]baseline.FileState, len(existing)+len(scoped))
+	for k, v := range existing {
+		if !underAnyRelpath(k, relpaths) {
+			merged[k] = v
+		}
+	}
+	for k, v := range scoped {
+		merged[k] = v
+	}
+	return merged
+}
+
+// underAnyRelpath reports whether key (a slash path relative to root) falls
+// under any of relpaths. "." matches everything; otherwise a match is an exact
+// path or path-prefix match on "/".
+func underAnyRelpath(key string, relpaths []string) bool {
+	for _, rp := range relpaths {
+		if rp == "." || key == rp || strings.HasPrefix(key, rp+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // Sync reconciles a held checkout in place, leaving the lock untouched.
