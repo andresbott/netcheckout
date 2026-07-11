@@ -74,10 +74,17 @@ func renderActivity() string {
 // the idle placeholder before Status has run, an in-flight "Checking…", a styled
 // error, or the formatted result of the most recent Status run. titledBox clips
 // the body to the panel, so no manual width handling is needed here.
+//
+// A stopped-on-conflict action carries both a report (with the conflicting
+// paths) and an error, so the conflict path list takes precedence over the
+// bare error message; any other action error (e.g. a lock/mount failure, where
+// the report is empty) still renders as an error rather than an empty body.
 func renderStatus(p profileModel) string {
 	switch {
 	case p.acting:
 		return p.name + "\n  Working…"
+	case p.actionReport != nil && len(p.actionReport.Conflicts) > 0:
+		return actionBody(p.name, *p.actionReport)
 	case p.actionErr != nil:
 		return p.name + "\n  " + errStyle.Render(p.actionErr.Error())
 	case p.actionReport != nil:

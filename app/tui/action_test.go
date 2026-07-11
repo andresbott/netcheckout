@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +125,57 @@ func TestSyncCmdProducesResult(t *testing.T) {
 	}
 	if len(res.report.Pushed) == 0 {
 		t.Error("want a non-empty Pushed list after editing a local file")
+	}
+}
+
+// TestSyncConflictShowsConflictingPathInActivity is the I2 regression: a
+// stopped-on-conflict Sync must render the conflicting path in the Activity
+// box, not just an empty body plus a count-only error string. It drives a
+// conflict through syncCmd (as the real Sync action would), feeds the
+// resulting actionResultMsg through the model's Update/applyActionResult, and
+// asserts the rendered view names the conflicting file.
+func TestSyncConflictShowsConflictingPathInActivity(t *testing.T) {
+	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
+	name, p, id := tuiHeldFixture(t)
+	// Same-file conflict: both sides changed since checkout.
+	_ = os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("LOCAL"), 0o644)
+	_ = os.WriteFile(filepath.Join(p.RemoteRoot, "keep.txt"), []byte("REMOTE"), 0o644)
+
+	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
+	msg := syncCmd(runner, id, name, p, lifecycle.Options{})()
+	res, ok := msg.(actionResultMsg)
+	if !ok {
+		t.Fatalf("want actionResultMsg, got %T", msg)
+	}
+	if res.err == nil {
+		t.Fatal("want a conflict error from syncCmd")
+	}
+	if len(res.report.Conflicts) == 0 {
+		t.Fatal("want the report to list the conflicting path")
+	}
+
+	cfg := &config.Config{Profiles: map[string]config.Profile{name: p}}
+	m := newModel("/tmp/x.yaml", cfg)
+	m.runner = runner
+	m.id = id
+	m = update(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // reveal Actions for name
+	if m.profile.name != name {
+		t.Fatalf("want profile %q open, got %q", name, m.profile.name)
+	}
+
+	m = update(t, m, msg)
+
+	if m.profile.actionErr == nil {
+		t.Error("actionErr should still be set on a conflict stop")
+	}
+	if m.profile.actionReport == nil || len(m.profile.actionReport.Conflicts) == 0 {
+		t.Fatal("actionReport with the conflicting paths must be stored even on error")
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "keep.txt") {
+		t.Errorf("Activity view should show the conflicting path %q, got:\n%s", "keep.txt", view)
 	}
 }
 

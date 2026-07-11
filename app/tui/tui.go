@@ -297,17 +297,19 @@ func checkinCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profil
 
 // applyActionResult stores a mutating action's outcome on the open profile. A
 // result is ignored unless the actions view is still showing that same profile,
-// so a slow run can never overwrite newer state.
+// so a slow run can never overwrite newer state. The report is stored even on
+// error — a conflict stop (*reconcile.ConflictError) carries the conflicting
+// paths in report.Conflicts, which renderStatus needs to show them instead of
+// just a count-only error string. actionErr is still set so non-conflict
+// failures (e.g. the remote root not being mounted) render as an error.
 func (m *model) applyActionResult(res actionResultMsg) {
 	if m.sub != subActions || m.profile.name != res.name {
 		return
 	}
 	m.profile.acting = false
+	rep := res.report
+	m.profile.actionReport = &rep
 	m.profile.actionErr = res.err
-	if res.err == nil {
-		rep := res.report
-		m.profile.actionReport = &rep
-	}
 }
 
 func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
