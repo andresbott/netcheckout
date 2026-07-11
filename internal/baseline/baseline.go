@@ -62,7 +62,7 @@ func Load(profile string) (*Baseline, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: state file path is derived from the app's own state dir (Dir()) plus the profile name, not attacker-controlled input.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
@@ -120,7 +120,7 @@ func Remove(profile string) error {
 
 // HashFile returns the sha256 hex of the file at path.
 func HashFile(path string) (string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G304: hashing a file under the user's own configured local root, discovered by Snapshot's walk; not a trust boundary.
 	if err != nil {
 		return "", err
 	}

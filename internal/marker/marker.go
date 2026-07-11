@@ -66,7 +66,7 @@ func Write(remoteRoot string, m *Marker) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Chmod(tmpName, 0o644); err != nil {
+	if err := os.Chmod(tmpName, 0o644); err != nil { //nolint:gosec // G302: the marker is a shared cross-user cooperative lock and must be world-readable (GOALS.md §5/§8), so 0644 is intentional, not overly permissive.
 		return err
 	}
 	return os.Rename(tmpName, Path(remoteRoot))
