@@ -6,20 +6,16 @@ package sanity
 
 import (
 	"os"
-	"path/filepath"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/marker"
 )
-
-// markerFile is the checkout marker placed inside a checked-out remote folder.
-// Matches GOALS.md §5 (name still "proposed").
-const markerFile = ".netcheckout.json"
 
 // Result is the lightweight, stat-only state of a profile.
 type Result struct {
 	LocalRoot  bool      // local_root exists on disk
 	RemoteRoot bool      // remote_root exists and is a directory (mounted)
-	CheckedOut bool      // a marker is present at any target (aggregate)
+	CheckedOut bool      // a marker is present at the remote root
 	Subpaths   []Subpath // one per declared subpath, in config order; empty for whole-root profiles
 }
 
@@ -36,18 +32,20 @@ func Check(p config.Profile) Result {
 	if _, err := os.Stat(config.ExpandRoot(p.LocalRoot)); err == nil {
 		r.LocalRoot = true
 	}
-	if info, err := os.Stat(config.ExpandRoot(p.RemoteRoot)); err == nil && info.IsDir() {
+	remoteRoot := config.ExpandRoot(p.RemoteRoot)
+	if info, err := os.Stat(remoteRoot); err == nil && info.IsDir() {
 		r.RemoteRoot = true
+	}
+	// The marker is per-profile at the remote root (GOALS.md §5).
+	if _, err := os.Stat(marker.Path(remoteRoot)); err == nil {
+		r.CheckedOut = true
 	}
 
 	targets, err := p.Targets()
 	if err != nil {
-		return r // an invalid declared subpath; the roots are still meaningful
+		return r
 	}
 	for _, t := range targets {
-		if _, err := os.Stat(filepath.Join(t.Remote, markerFile)); err == nil {
-			r.CheckedOut = true
-		}
 		if t.Subpath != "" {
 			_, err := os.Stat(t.Remote)
 			r.Subpaths = append(r.Subpaths, Subpath{Path: t.Subpath, Exists: err == nil})

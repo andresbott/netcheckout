@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/marker"
 )
 
 func TestCheckRootsExistence(t *testing.T) {
@@ -34,13 +35,13 @@ func TestCheckRemoteRootMustBeDir(t *testing.T) {
 	}
 }
 
-func TestCheckMarkerAggregate(t *testing.T) {
+func TestCheckMarkerAtRemoteRoot(t *testing.T) {
 	local, remote := t.TempDir(), t.TempDir()
 	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
 	if Check(p).CheckedOut {
 		t.Error("CheckedOut should be false with no marker")
 	}
-	if err := os.WriteFile(filepath.Join(remote, markerFile), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(remote, marker.FileName), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if !Check(p).CheckedOut {
