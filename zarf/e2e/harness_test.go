@@ -24,11 +24,21 @@ import (
 // normal non-zero exit is returned as exitCode for the caller to assert on.
 func runCLI(t *testing.T, configPath string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
+	return runCLIEnv(t, configPath, nil, args...)
+}
+
+// runCLIEnv is runCLI plus extraEnv appended to the child process's environment (in
+// addition to the parent's own environment). Scenarios use this to set
+// NETCHECKOUT_STATE so checkout/sync/checkin within a single test share one baseline
+// state directory instead of each falling back to its own default.
+func runCLIEnv(t *testing.T, configPath string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	fullArgs := append([]string{"--config", configPath}, args...)
 	cmd := exec.CommandContext(ctx, binPath, fullArgs...)
+	cmd.Env = append(os.Environ(), extraEnv...)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

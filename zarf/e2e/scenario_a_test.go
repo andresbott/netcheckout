@@ -16,12 +16,14 @@ func TestScenarioA(t *testing.T) {
 	randomTree(t, remote)
 	remoteSnapshot := snapshot(t, remote)
 	configPath := writeConfig(t, "e2e-test@localhost", "e2e", local, remote)
+	state := t.TempDir()
+	env := []string{"NETCHECKOUT_STATE=" + state}
 
 	if !t.Run("status reports no checkout before checkout", func(t *testing.T) {
 		if got := snapshot(t, local); len(got) != 0 {
 			t.Fatalf("local should start empty, got %d files: %#v", len(got), got)
 		}
-		stdout, _, exitCode := runCLI(t, configPath, "status", "e2e")
+		stdout, _, exitCode := runCLIEnv(t, configPath, env, "status", "e2e")
 		if exitCode != 0 {
 			t.Fatalf("status exit = %d, want 0 (stdout: %s)", exitCode, stdout)
 		}
@@ -33,7 +35,7 @@ func TestScenarioA(t *testing.T) {
 	}
 
 	if !t.Run("checkout copies remote to local and writes a marker", func(t *testing.T) {
-		_, _, exitCode := runCLI(t, configPath, "checkout", "e2e")
+		_, _, exitCode := runCLIEnv(t, configPath, env, "checkout", "e2e")
 		if exitCode != 0 {
 			t.Fatalf("checkout exit = %d, want 0", exitCode)
 		}
@@ -61,7 +63,7 @@ func TestScenarioA(t *testing.T) {
 	}
 
 	if !t.Run("status reports local changes after editing", func(t *testing.T) {
-		stdout, _, exitCode := runCLI(t, configPath, "status", "e2e")
+		stdout, _, exitCode := runCLIEnv(t, configPath, env, "status", "e2e")
 		if exitCode != 0 {
 			t.Fatalf("status exit = %d, want 0 (stdout: %s)", exitCode, stdout)
 		}
@@ -73,7 +75,7 @@ func TestScenarioA(t *testing.T) {
 	}
 
 	if !t.Run("sync propagates local changes to remote and keeps the marker", func(t *testing.T) {
-		_, _, exitCode := runCLI(t, configPath, "sync", "e2e")
+		_, _, exitCode := runCLIEnv(t, configPath, env, "sync", "e2e")
 		if exitCode != 0 {
 			t.Fatalf("sync exit = %d, want 0", exitCode)
 		}
@@ -86,7 +88,7 @@ func TestScenarioA(t *testing.T) {
 	}
 
 	t.Run("checkin propagates changes and clears the marker", func(t *testing.T) {
-		_, _, exitCode := runCLI(t, configPath, "checkin", "e2e")
+		_, _, exitCode := runCLIEnv(t, configPath, env, "checkin", "e2e")
 		if exitCode != 0 {
 			t.Fatalf("checkin exit = %d, want 0", exitCode)
 		}
