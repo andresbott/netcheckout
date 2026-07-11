@@ -49,6 +49,7 @@ type model struct {
 	form         formModel
 	profile      profileModel
 	confirmName  string
+	confirmKind  confirmKind
 	confirmFocus confirmFocus
 	err          error
 	id           ident.Ident
@@ -181,6 +182,7 @@ func (m model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "d":
 		if name, ok := m.list.selected(); ok {
 			m.confirmName = name
+			m.confirmKind = confirmDelete
 			m.confirmFocus = confirmFocusCancel
 			m.mode = modeConfirm
 		}
@@ -275,6 +277,24 @@ func checkoutCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profi
 	}
 }
 
+// syncCmd runs lifecycle.Runner.Sync off the UI thread and delivers the
+// outcome as an actionResultMsg.
+func syncCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
+	return func() tea.Msg {
+		rep, err := r.Sync(context.Background(), name, p, id, "", opts)
+		return actionResultMsg{name: name, report: rep, err: err}
+	}
+}
+
+// checkinCmd runs lifecycle.Runner.Checkin off the UI thread and delivers the
+// outcome as an actionResultMsg.
+func checkinCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
+	return func() tea.Msg {
+		rep, err := r.Checkin(context.Background(), name, p, id, opts)
+		return actionResultMsg{name: name, report: rep, err: err}
+	}
+}
+
 // applyActionResult stores a mutating action's outcome on the open profile. A
 // result is ignored unless the actions view is still showing that same profile,
 // so a slow run can never overwrite newer state.
@@ -324,8 +344,18 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.profile.actionReport = nil
 			opts := lifecycle.Options{Force: m.actForce, Clean: m.actClean}
 			return m, checkoutCmd(m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], opts)
+		case "Sync":
+			m.profile.acting = true
+			m.profile.actionErr = nil
+			m.profile.actionReport = nil
+			opts := lifecycle.Options{Force: m.actForce, Clean: m.actClean}
+			return m, syncCmd(m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], opts)
+		case "Check-in":
+			m.confirmName = m.profile.name
+			m.confirmKind = confirmCheckin
+			m.confirmFocus = confirmFocusCancel
+			m.mode = modeConfirm
 		}
-		// Check-in and Sync are wired in Plan B (M4).
 		return m, nil
 	}
 	return m, nil
@@ -443,7 +473,7 @@ func (m model) View() string {
 	case modeForm:
 		return m.overlayModal(m.form.View())
 	case modeConfirm:
-		return m.overlayModal(confirmModal(m.confirmName, m.confirmFocus, m.width))
+		return m.overlayModal(confirmModal(m.confirmKind, m.confirmName, m.confirmFocus, m.width))
 	default:
 		return m.mainView(false)
 	}

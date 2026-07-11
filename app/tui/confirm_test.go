@@ -149,7 +149,7 @@ func TestDeleteFocusTabCycles(t *testing.T) {
 // TestConfirmModalHasDeleteCancelButtons guards the new button UI: the modal
 // must render both bracketed buttons and the shared hint line.
 func TestConfirmModalHasDeleteCancelButtons(t *testing.T) {
-	view := confirmModal("alpha", confirmFocusCancel, 80)
+	view := confirmModal(confirmDelete, "alpha", confirmFocusCancel, 80)
 	for _, want := range []string{"[ Delete ]", "[ Cancel ]", "Move", "Activate", "Cancel"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("confirm modal missing %q:\n%s", want, view)

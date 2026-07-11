@@ -10,9 +10,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// profileActions are the operations the Actions box offers for a profile. Status
-// is wired to internal/status (see updateProfile); Checkout, Check-in, and Sync
-// remain placeholders until the checkout engine exists.
+// profileActions are the operations the Actions box offers for a profile:
+// Status runs internal/status; Checkout and Sync run their lifecycle.Runner
+// action directly; Check-in opens the shared confirm modal first (see
+// updateProfile and confirm.go).
 var profileActions = []string{"Status", "Checkout", "Check-in", "Sync"}
 
 // profileModel is the state for the Actions box: which profile is open, which

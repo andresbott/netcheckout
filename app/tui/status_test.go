@@ -169,23 +169,6 @@ func TestStatusEnterSurfacesError(t *testing.T) {
 	}
 }
 
-// TestNonStatusActionIsInert: Enter on a still-unwired action (Check-in, Sync)
-// returns no command and does not start a compute. Checkout is wired
-// separately (see action_test.go) and is no longer inert.
-func TestNonStatusActionIsInert(t *testing.T) {
-	m := openActions(t, testConfig())
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown}) // Checkout
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown}) // move off Checkout to "Check-in"
-	nm, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = nm.(model)
-	if cmd != nil {
-		t.Fatal("non-Status action should not return a command")
-	}
-	if m.profile.checking {
-		t.Fatal("non-Status action should not start a compute")
-	}
-}
-
 // TestStaleStatusResultIgnored: a result for a profile the user has left is
 // dropped rather than applied to the current profile.
 func TestStaleStatusResultIgnored(t *testing.T) {
