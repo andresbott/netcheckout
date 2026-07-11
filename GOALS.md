@@ -269,3 +269,39 @@ For `checkin <profile> <relpath>`:
 - **M3 — Checkout:** `checkout` (copy + marker/lock), conflict rules, `--dry-run`, `--force`.
 - **M4 — Check-in:** `checkin` with marker removal + verification; `--clean` option.
 - **M5 — Polish:** verbose/progress output, thorough error messages, tests.
+
+---
+
+## 15. Deferred follow-ups
+
+Non-blocking refinements to already-shipped work, consciously deferred and recorded here
+so they aren't lost. None affects the correctness of current behavior.
+
+- **TUI `status` re-entry guard.** The TUI Status action (Activity box) runs
+  `status.Compute` asynchronously and applies the result under a name guard, but does not
+  stop a *second* run of the same profile from starting while one is already in flight
+  (pressing Enter repeatedly, or leaving and reopening a profile mid-compute). Because
+  `status` is a read-only `rsync` dry-run this is harmless — a later result is still a
+  valid reading — but repeated Enters spawn redundant concurrent `rsync` processes. Fix:
+  skip launching a new compute while `checking` is set (the Status branch of
+  `updateProfile` in `app/tui/tui.go`).
+- **Share the change-mark / diff formatting.** The TUI (`app/tui/profile.go`) and the CLI
+  (`app/cmd/status.go`) each carry their own copy of the `+`/`-`/`M` change-mark and
+  push/pull diff formatting. The duplication is intentional for now — the two render to
+  different media, and the CLI file was out of scope when the TUI action was built. When
+  `app/cmd/status.go` is next touched, hoist the identical `changeMark` into a shared
+  helper (e.g. a `Mark()` method on `rsync.ChangeType`) used by both packages.
+- **Per-subpath checkout state in the profile sanity check.** The TUI's lightweight
+  sanity check (`internal/sanity`, shown in the Details box) reports a single aggregate
+  "checked out" flag per profile — `Check` ORs the marker across a scoped profile's
+  subpaths. It is inert today (nothing writes markers until `checkout`/`checkin` exist, so
+  it always reads "not checked out"). Once the checkout engine lands and marker semantics
+  are decided (per-root vs per-subpath, see open question 9), upgrade to per-subpath
+  checkout display — the per-target marker data is already available in `sanity.Check`'s
+  loop, so add a field to `sanity.Subpath` and render it beside each subpath.
+- **No staleness guard on the sanity-check cache.** The TUI runs the sanity checks in the
+  background, keyed by profile name, latest result wins. A slow/stale check that resolves
+  after its profile was deleted or renamed can briefly re-add (or, on same-name
+  recreation, momentarily show) an out-of-date result in the Details box. It is harmless
+  and self-correcting — Status is read-only and the next check overwrites it. A
+  generation/epoch counter would close it but isn't justified for a display-only glitch.
