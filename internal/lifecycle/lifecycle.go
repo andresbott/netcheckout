@@ -22,11 +22,15 @@ type Options struct {
 
 // Report describes what an action did (or would do, for a dry run).
 type Report struct {
-	Action    string
-	Pulled    []string
-	Conflicts []string
-	Marker    *marker.Marker
-	DryRun    bool
+	Action        string
+	Pulled        []string
+	Pushed        []string
+	RemovedRemote []string
+	RemovedLocal  []string
+	Conflicts     []string
+	Marker        *marker.Marker
+	DryRun        bool
+	Released      bool
 }
 
 // Syncer is the rsync surface lifecycle needs; *rsync.Syncer satisfies it.
