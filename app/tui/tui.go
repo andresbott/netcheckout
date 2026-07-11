@@ -3,11 +3,11 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/andresbott/netcheckout/app/metainfo"
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
@@ -81,19 +81,11 @@ func newModel(path string, cfg *config.Config) model {
 // identityString is the header's right-hand text: the configured identity, or
 // "$USER@$HOSTNAME" as GOALS.md specifies for the default.
 func identityString(cfg *config.Config) string {
-	if cfg.Identity != "" {
-		return cfg.Identity
-	}
-	user := os.Getenv("USER")
-	host, _ := os.Hostname()
-	switch {
-	case user != "" && host != "":
-		return user + "@" + host
-	case host != "":
-		return host
-	default:
+	id, err := ident.Resolve(cfg)
+	if err != nil {
 		return "unknown"
 	}
+	return id.By
 }
 
 func (m *model) refreshList() {
