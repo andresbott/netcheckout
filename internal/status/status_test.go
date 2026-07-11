@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/marker"
 	"github.com/andresbott/netcheckout/internal/rsync"
 )
 
@@ -215,6 +216,40 @@ func TestComputeStopsEarlyWhenNotCheckedOut(t *testing.T) {
 	}
 	if len(d.calls) != 0 {
 		t.Errorf("want zero differ calls, got %#v", d.calls)
+	}
+}
+
+type jobRecorder struct{ jobs []rsync.Job }
+
+func (r *jobRecorder) Diff(_ context.Context, j rsync.Job) (rsync.Diff, error) {
+	r.jobs = append(r.jobs, j)
+	return rsync.Diff{InSync: true}, nil
+}
+
+func TestComputeExcludesMarkerFromDiffs(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(remoteRoot, marker.FileName), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := &jobRecorder{}
+	p := config.Profile{LocalRoot: localRoot, RemoteRoot: remoteRoot}
+	if _, err := Compute(context.Background(), rec, p); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.jobs) == 0 {
+		t.Fatal("expected at least one diff job")
+	}
+	for _, j := range rec.jobs {
+		found := false
+		for _, e := range j.Options.Exclude {
+			if e == marker.FileName {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("diff job missing marker exclude: %+v", j.Options.Exclude)
+		}
 	}
 }
 

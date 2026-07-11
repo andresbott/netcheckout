@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/marker"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/sanity"
 )
@@ -56,6 +57,7 @@ func computeTarget(ctx context.Context, d Differ, t config.Target) (TargetStatus
 		Local:     rsync.Endpoint{Path: t.Local},
 		Remote:    rsync.Endpoint{Path: t.Remote},
 		Direction: rsync.Pull,
+		Options:   rsync.Options{Exclude: []string{marker.FileName}},
 	})
 	if err != nil {
 		return TargetStatus{}, fmt.Errorf("%s: pull diff: %w", label(t.Subpath), err)
@@ -69,6 +71,7 @@ func computeTarget(ctx context.Context, d Differ, t config.Target) (TargetStatus
 		Local:     rsync.Endpoint{Path: t.Local},
 		Remote:    rsync.Endpoint{Path: t.Remote},
 		Direction: rsync.Push,
+		Options:   rsync.Options{Exclude: []string{marker.FileName}},
 	})
 	if err != nil {
 		return TargetStatus{}, fmt.Errorf("%s: push diff: %w", label(t.Subpath), err)

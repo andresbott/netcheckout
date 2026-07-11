@@ -89,6 +89,9 @@ func buildArgs(j Job, dryRun bool) ([]string, error) {
 	if j.Options.Delete {
 		args = append(args, "--delete")
 	}
+	for _, e := range j.Options.Exclude {
+		args = append(args, "--exclude="+e)
+	}
 
 	if j.Remote.SSH != nil {
 		if rsh := sshRsh(j.Remote.SSH); rsh != "" {

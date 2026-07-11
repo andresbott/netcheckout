@@ -118,6 +118,15 @@ func TestBuildArgsValidation(t *testing.T) {
 	}
 }
 
+func TestBuildArgsExcludeAddsFlag(t *testing.T) {
+	j := Job{Local: Endpoint{Path: "/l"}, Remote: Endpoint{Path: "/r"}, Direction: Pull,
+		Options: Options{Exclude: []string{".netcheckout.json"}}}
+	got, _ := buildArgs(j, false)
+	if !slices.Contains(got, "--exclude=.netcheckout.json") {
+		t.Errorf("args missing --exclude: %v", got)
+	}
+}
+
 func TestWithTrailingSlashIdempotent(t *testing.T) {
 	if got := withTrailingSlash("/a/b"); got != "/a/b/" {
 		t.Errorf("got %q", got)

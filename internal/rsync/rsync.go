@@ -39,11 +39,12 @@ type Endpoint struct {
 // add/update preserving modification times only — no deletion and no
 // perms/owner/group, which SMB and NFS mounts frequently cannot honor.
 type Options struct {
-	Delete        bool // rsync --delete
-	PreservePerms bool // rsync --perms
-	PreserveOwner bool // rsync --owner
-	PreserveGroup bool // rsync --group
-	Checksum      bool // rsync --checksum
+	Delete        bool     // rsync --delete
+	PreservePerms bool     // rsync --perms
+	PreserveOwner bool     // rsync --owner
+	PreserveGroup bool     // rsync --group
+	Checksum      bool     // rsync --checksum
+	Exclude       []string // rsync --exclude patterns
 }
 
 // Job is a single source→destination sync, expressed as a local and a remote

@@ -65,8 +65,8 @@ func TestScenarioA(t *testing.T) {
 		if exitCode != 0 {
 			t.Fatalf("status exit = %d, want 0 (stdout: %s)", exitCode, stdout)
 		}
-		if !strings.Contains(stdout, "changed") {
-			t.Fatalf("status stdout = %q, want it to report local changes", stdout)
+		if !strings.Contains(stdout, "e2e-added.dat") {
+			t.Fatalf("status stdout = %q, want it to report the locally added file", stdout)
 		}
 	}) {
 		t.FailNow()
