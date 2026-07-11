@@ -104,3 +104,87 @@ func TestSnapshotSkipsNonRegularFiles(t *testing.T) {
 		t.Error("regular file should still be captured")
 	}
 }
+
+func TestScanRecordsSizeMtimeNoHash(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Scan(root, []string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs, ok := got["a.txt"]
+	if !ok || fs.Size != 5 {
+		t.Fatalf("scan a.txt = %+v ok=%v", fs, ok)
+	}
+	if fs.Hash != "" {
+		t.Errorf("Scan must not hash (fast path); got %q", fs.Hash)
+	}
+}
+
+func TestScanSkipsNonRegularFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A broken symlink (points nowhere) must be skipped, not stat'd into the manifest.
+	if err := os.Symlink(filepath.Join(root, "does-not-exist"), filepath.Join(root, "dangling")); err != nil {
+		t.Skipf("symlinks unsupported here: %v", err)
+	}
+	files, err := Scan(root, []string{"."})
+	if err != nil {
+		t.Fatalf("Scan must not error on a symlink: %v", err)
+	}
+	if _, ok := files["dangling"]; ok {
+		t.Error("symlink must be excluded from the scan manifest")
+	}
+	if _, ok := files["real.txt"]; !ok {
+		t.Error("regular file should still be captured")
+	}
+}
+
+func TestChangedFastPathUnchanged(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(p)
+	base := FileState{Size: 5, ModTime: info.ModTime(), Hash: "irrelevant"}
+	cur := FileState{Size: 5, ModTime: info.ModTime()}
+	changed, err := Changed(base, cur, p)
+	if err != nil || changed {
+		t.Fatalf("same size+mtime must be unchanged; changed=%v err=%v", changed, err)
+	}
+}
+
+func TestChangedHashConfirmsSameContent(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := HashFile(p)
+	// mtime differs from base, but content (hash) matches => NOT changed.
+	base := FileState{Size: 5, ModTime: time.Unix(1, 0), Hash: h}
+	cur := FileState{Size: 5, ModTime: time.Unix(999, 0)}
+	changed, err := Changed(base, cur, p)
+	if err != nil || changed {
+		t.Fatalf("matching hash must be unchanged despite mtime; changed=%v err=%v", changed, err)
+	}
+}
+
+func TestChangedDetectsRealEdit(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "a.txt")
+	if err := os.WriteFile(p, []byte("EDITED"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := FileState{Size: 5, ModTime: time.Unix(1, 0), Hash: "0000"}
+	cur := FileState{Size: 6, ModTime: time.Unix(2, 0)}
+	changed, err := Changed(base, cur, p)
+	if err != nil || !changed {
+		t.Fatalf("different content must be changed; changed=%v err=%v", changed, err)
+	}
+}

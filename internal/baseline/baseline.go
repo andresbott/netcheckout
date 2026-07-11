@@ -177,3 +177,59 @@ func Snapshot(root string, relpaths []string) (map[string]FileState, error) {
 	}
 	return out, nil
 }
+
+// Scan walks each relpath subtree under root and returns a size+mtime manifest
+// (no hash — that is the fast path) of every regular file, keyed by slash path
+// relative to root. The marker file is excluded. A missing subtree is skipped.
+func Scan(root string, relpaths []string) (map[string]FileState, error) {
+	if len(relpaths) == 0 {
+		relpaths = []string{"."}
+	}
+	out := map[string]FileState{}
+	for _, rp := range relpaths {
+		base := filepath.Join(root, filepath.Clean(rp))
+		if _, err := os.Stat(base); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || d.Name() == marker.FileName {
+				return nil
+			}
+			if !d.Type().IsRegular() {
+				return nil // skip symlinks and other non-regular entries; the manifest tracks regular files only
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			out[filepath.ToSlash(rel)] = FileState{Size: info.Size(), ModTime: info.ModTime()}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// Changed reports whether the file at absPath differs from base. Fast path: if
+// size and mtime both match base, it is unchanged without reading the file.
+// Otherwise it hashes absPath and compares to base.Hash (so a mtime-only change
+// with identical content — common on network shares — is not a false positive).
+func Changed(base, cur FileState, absPath string) (bool, error) {
+	if cur.Size == base.Size && cur.ModTime.Equal(base.ModTime) {
+		return false, nil
+	}
+	h, err := HashFile(absPath)
+	if err != nil {
+		return false, err
+	}
+	return h != base.Hash, nil
+}
