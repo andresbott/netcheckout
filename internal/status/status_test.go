@@ -125,11 +125,11 @@ func TestComputeMultipleTargets(t *testing.T) {
 	}
 	localB := filepath.Join(localRoot, "b") // left uncreated: never checked out
 
-	// Mark the profile checked out (aggregate: one target's marker is enough).
+	// Mark the profile checked out: the marker is per-profile at the remote root.
 	if err := os.MkdirAll(filepath.Join(remoteRoot, "a"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(remoteRoot, "a", ".netcheckout.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(remoteRoot, ".netcheckout.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
