@@ -54,6 +54,9 @@ type Job struct {
 	Remote    Endpoint
 	Direction Direction
 	Options   Options
+	// Files, when non-empty, restricts the transfer to these paths (relative to
+	// the source root) via rsync --files-from. Empty means the whole tree.
+	Files []string
 }
 
 // ChangeType classifies a single itemized change.

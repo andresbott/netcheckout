@@ -94,3 +94,33 @@ func TestIntegrationPushDiffSyncDelete(t *testing.T) {
 		t.Fatalf("remote a.txt should be gone, stat err = %v", err)
 	}
 }
+
+func TestSyncFilesFromTransfersOnlyListed(t *testing.T) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not on PATH")
+	}
+	src := t.TempDir()
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("k"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "skip.txt"), []byte("s"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := rsync.New()
+	_, err := s.Sync(context.Background(), rsync.Job{
+		Local:     rsync.Endpoint{Path: dst},
+		Remote:    rsync.Endpoint{Path: src},
+		Direction: rsync.Pull,
+		Files:     []string{"keep.txt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "keep.txt")); err != nil {
+		t.Errorf("keep.txt should have been pulled: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "skip.txt")); !os.IsNotExist(err) {
+		t.Errorf("skip.txt should NOT have been pulled")
+	}
+}

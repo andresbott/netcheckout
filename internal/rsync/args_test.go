@@ -127,6 +127,18 @@ func TestBuildArgsExcludeAddsFlag(t *testing.T) {
 	}
 }
 
+func TestWithFilesFromInsertsBeforePaths(t *testing.T) {
+	args := []string{"--recursive", "--links", "--times", "--itemize-changes", "/src/", "/dst"}
+	got := withFilesFrom(args, "/tmp/list")
+	// --files-from must come before the two trailing positional paths.
+	if got[len(got)-3] != "--files-from=/tmp/list" {
+		t.Fatalf("files-from not spliced before paths: %v", got)
+	}
+	if got[len(got)-2] != "/src/" || got[len(got)-1] != "/dst" {
+		t.Fatalf("positional paths disturbed: %v", got)
+	}
+}
+
 func TestWithTrailingSlashIdempotent(t *testing.T) {
 	if got := withTrailingSlash("/a/b"); got != "/a/b/" {
 		t.Errorf("got %q", got)
