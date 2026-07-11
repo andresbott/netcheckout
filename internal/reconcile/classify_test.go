@@ -1,6 +1,12 @@
 package reconcile
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/andresbott/netcheckout/internal/baseline"
+)
 
 func TestClassifyPathTable(t *testing.T) {
 	// s(present, changed) builds a side state.
@@ -34,4 +40,45 @@ func TestClassifyPathTable(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClassifyDisambiguatesDeleteFromAdd(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	// gone.txt: was in base, present on remote, absent locally => local delete => RemoteDelete.
+	if err := os.WriteFile(filepath.Join(remoteRoot, "gone.txt"), []byte("g"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// new.txt: NOT in base, present on remote only => remote addition => Pull.
+	if err := os.WriteFile(filepath.Join(remoteRoot, "new.txt"), []byte("n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goneInfo, _ := os.Stat(filepath.Join(remoteRoot, "gone.txt"))
+	base := map[string]baseline.FileState{
+		"gone.txt": {Size: 1, ModTime: goneInfo.ModTime(), Hash: hashOf(t, filepath.Join(remoteRoot, "gone.txt"))},
+	}
+	local := map[string]baseline.FileState{} // both absent locally
+	remote := map[string]baseline.FileState{
+		"gone.txt": {Size: goneInfo.Size(), ModTime: goneInfo.ModTime()},
+		"new.txt":  {Size: 1, ModTime: goneInfo.ModTime()},
+	}
+	plan, err := Classify(base, local, remote, localRoot, remoteRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.RemoteDeletes) != 1 || plan.RemoteDeletes[0] != "gone.txt" {
+		t.Errorf("gone.txt should be a RemoteDelete, plan=%+v", plan)
+	}
+	if len(plan.Pull) != 1 || plan.Pull[0] != "new.txt" {
+		t.Errorf("new.txt should be a Pull, plan=%+v", plan)
+	}
+}
+
+func hashOf(t *testing.T, p string) string {
+	t.Helper()
+	h, err := baseline.HashFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
 }

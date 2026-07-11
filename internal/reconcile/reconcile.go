@@ -4,7 +4,13 @@
 // and direct removals.
 package reconcile
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"sort"
+
+	"github.com/andresbott/netcheckout/internal/baseline"
+)
 
 type action int
 
@@ -74,4 +80,65 @@ func classifyPath(inBase, localPresent, localChanged, remotePresent, remoteChang
 			return actNoop
 		}
 	}
+}
+
+// sortedPlan sorts each slice in the plan so output is deterministic.
+func sortedPlan(p *Plan) {
+	sort.Strings(p.Pull)
+	sort.Strings(p.Push)
+	sort.Strings(p.RemoteDeletes)
+	sort.Strings(p.LocalDeletes)
+	sort.Strings(p.Conflicts)
+}
+
+// Classify compares the current local and remote manifests against the baseline
+// and buckets every path into a Plan per the §9.5 table. localRoot/remoteRoot
+// are needed to hash a file when the fast path is inconclusive.
+func Classify(base, local, remote map[string]baseline.FileState, localRoot, remoteRoot string) (Plan, error) {
+	seen := map[string]struct{}{}
+	for p := range base {
+		seen[p] = struct{}{}
+	}
+	for p := range local {
+		seen[p] = struct{}{}
+	}
+	for p := range remote {
+		seen[p] = struct{}{}
+	}
+
+	var plan Plan
+	for p := range seen {
+		bState, inBase := base[p]
+		lState, lPresent := local[p]
+		rState, rPresent := remote[p]
+
+		lChanged, rChanged := false, false
+		var err error
+		if inBase && lPresent {
+			if lChanged, err = baseline.Changed(bState, lState, filepath.Join(localRoot, filepath.FromSlash(p))); err != nil {
+				return Plan{}, err
+			}
+		}
+		if inBase && rPresent {
+			if rChanged, err = baseline.Changed(bState, rState, filepath.Join(remoteRoot, filepath.FromSlash(p))); err != nil {
+				return Plan{}, err
+			}
+		}
+
+		switch classifyPath(inBase, lPresent, lChanged, rPresent, rChanged) {
+		case actPush:
+			plan.Push = append(plan.Push, p)
+		case actPull:
+			plan.Pull = append(plan.Pull, p)
+		case actRemoteDelete:
+			plan.RemoteDeletes = append(plan.RemoteDeletes, p)
+		case actLocalDelete:
+			plan.LocalDeletes = append(plan.LocalDeletes, p)
+		case actConflict:
+			plan.Conflicts = append(plan.Conflicts, p)
+		case actNoop:
+		}
+	}
+	sortedPlan(&plan)
+	return plan, nil
 }
