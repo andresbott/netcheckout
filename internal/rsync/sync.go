@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 )
 
@@ -42,6 +44,37 @@ func (s *Syncer) bin() string {
 	return s.Bin
 }
 
+// withFilesFrom splices "--files-from=<path>" in front of the two trailing
+// positional paths so rsync parses it as an option, not a source.
+func withFilesFrom(args []string, listPath string) []string {
+	n := len(args)
+	out := make([]string, 0, n+1)
+	out = append(out, args[:n-2]...)
+	out = append(out, "--files-from="+listPath)
+	out = append(out, args[n-2:]...)
+	return out
+}
+
+// writeFileList writes one relative path per line to a temp file and returns its
+// name; the caller removes it.
+func writeFileList(paths []string) (string, error) {
+	f, err := os.CreateTemp("", "netcheckout-files-*.txt")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	if _, err := f.WriteString(strings.Join(paths, "\n") + "\n"); err != nil {
+		_ = f.Close()
+		_ = os.Remove(name)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
 // runRsync builds args for the job, runs it, and returns raw stdout. A non-zero
 // exit becomes an *Error; a validation failure is returned unwrapped.
 func (s *Syncer) runRsync(ctx context.Context, j Job, dryRun bool, op string) (string, error) {
@@ -49,15 +82,58 @@ func (s *Syncer) runRsync(ctx context.Context, j Job, dryRun bool, op string) (s
 	if err != nil {
 		return "", err
 	}
+	if len(j.Files) > 0 {
+		listPath, err := writeFileList(j.Files)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = os.Remove(listPath) }()
+		args = withFilesFrom(args, listPath)
+	}
 	r := s.run
 	if r == nil {
 		r = execRun
 	}
-	res, err := r(ctx, s.bin(), args, s.Output)
+	tee := s.Output
+	if j.OnChange != nil {
+		iw := &itemizeWriter{onChange: j.OnChange}
+		if tee != nil {
+			tee = io.MultiWriter(tee, iw)
+		} else {
+			tee = iw
+		}
+	}
+	res, err := r(ctx, s.bin(), args, tee)
 	if err != nil {
 		return "", &Error{Op: op, Args: args, Stderr: res.stderr, ExitCode: res.exitCode, Err: err}
 	}
 	return res.stdout, nil
+}
+
+// itemizeWriter parses rsync --itemize-changes output as it streams, invoking
+// onChange for every recognized change the instant its line completes. Writes may
+// split a line across calls, so partial input is buffered until the next newline.
+// Non-itemize chatter (and any stderr the runner tees in) is ignored, exactly as
+// the batch parser ignores it.
+type itemizeWriter struct {
+	onChange func(Change)
+	buf      []byte
+}
+
+func (w *itemizeWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(string(w.buf[:i]), "\r")
+		w.buf = w.buf[i+1:]
+		if c, ok := classifyItemizeLine(line); ok {
+			w.onChange(c)
+		}
+	}
+	return len(p), nil
 }
 
 // Diff performs a dry run and returns the changes a Sync of the same job would make.

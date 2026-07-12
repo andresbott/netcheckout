@@ -1,0 +1,11 @@
+{
+  "checked_out_by": "alice@thinkpad",
+  "profile": "music",
+  "host": "bottlinux",
+  "relpaths": [
+    "."
+  ],
+  "checked_out_at": "2026-07-12T19:07:12.782845778Z",
+  "last_sync_at": "2026-07-12T19:07:16.887438111Z",
+  "tool_version": "dev-build"
+}

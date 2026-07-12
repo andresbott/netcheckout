@@ -40,14 +40,18 @@ coverage: ## check ./internal/... test coverage meets the threshold
 	done; \
 	exit $$fail
 
+.PHONY: e2e
+e2e: ## run end-to-end binary lifecycle tests (builds a temp binary, requires rsync)
+	@go test -tags e2e ./zarf/e2e/... -v -count=1
+
 .PHONY: verify
-verify: test license-check lint benchmark coverage ## run the full verification suite
+verify: test license-check lint benchmark coverage e2e ## run the full verification suite
 
 #==========================================================================================
 ##@ Running
 #==========================================================================================
-run: ## run the interactive profiles TUI (re-seeds a git-ignored dev config from zarf/sample each run)
-	@cp zarf/sample/config.yaml netcheckout.dev.yaml
+run: ## run the interactive profiles TUI (re-seeds a git-ignored dev config from zarf/sample each run, rewriting sample paths to this checkout)
+	@sed 's|/path/to/netcheckout|$(CURDIR)|g' zarf/sample/config.yaml > netcheckout.dev.yaml
 	@go run main.go --config netcheckout.dev.yaml
 
 #==========================================================================================

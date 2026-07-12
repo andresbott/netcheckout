@@ -1,0 +1,169 @@
+package tui
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/andresbott/netcheckout/internal/config"
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// TestIdentityShortcutOpensSettings: "i" from the main list opens the client
+// settings modal with the Identity input focused.
+func TestIdentityShortcutOpensSettings(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if m.mode != modeSettings {
+		t.Fatalf("want modeSettings after i, got %d", m.mode)
+	}
+	if !m.settings.onInput() {
+		t.Errorf("settings should open with an input focused, focus = %d", m.settings.focus)
+	}
+}
+
+// TestStartupOpensSettingsWhenIdentityUnset: withStartupSettings opens the modal
+// only when no identity is configured; a configured identity starts on main.
+func TestStartupOpensSettingsWhenIdentityUnset(t *testing.T) {
+	unset := newModel("/tmp/x.yaml", testConfig()).withStartupSettings()
+	if unset.mode != modeSettings {
+		t.Fatalf("empty identity should auto-open settings, got mode %d", unset.mode)
+	}
+
+	cfg := testConfig()
+	cfg.Identity = "alice@laptop"
+	set := newModel("/tmp/x.yaml", cfg).withStartupSettings()
+	if set.mode != modeMain {
+		t.Fatalf("configured identity should start on main, got mode %d", set.mode)
+	}
+}
+
+// TestSettingsSavePersistsIdentity: typing an identity and pressing enter writes
+// it to disk, returns to main, and refreshes both the header text and the
+// resolved lifecycle identity.
+func TestSettingsSavePersistsIdentity(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := testConfig()
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := newModel(p, cfg)
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("alice@laptop")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after save, got %d", m.mode)
+	}
+	if m.cfg.Identity != "alice@laptop" {
+		t.Errorf("cfg identity = %q, want alice@laptop", m.cfg.Identity)
+	}
+	if m.identity != "alice@laptop" {
+		t.Errorf("header identity = %q, want alice@laptop", m.identity)
+	}
+	if m.id.By != "alice@laptop" {
+		t.Errorf("resolved id.By = %q, want alice@laptop", m.id.By)
+	}
+	saved, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Identity != "alice@laptop" {
+		t.Errorf("persisted identity = %q, want alice@laptop", saved.Identity)
+	}
+}
+
+// TestSettingsSaveViaButton: tab to Save and pressing enter also submits.
+func TestSettingsSaveViaButton(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	m := newModel(p, testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("bob@nas")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab}) // input -> Save
+	if m.settings.focus != m.settings.saveSlot() {
+		t.Fatalf("tab from the input should focus Save, got %d", m.settings.focus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.mode != modeMain {
+		t.Fatalf("want modeMain after Save, got %d", m.mode)
+	}
+	if m.cfg.Identity != "bob@nas" {
+		t.Errorf("cfg identity = %q, want bob@nas", m.cfg.Identity)
+	}
+}
+
+// TestSettingsFocusNav: tab cycles input->Save->Cancel->input, and left/right
+// toggle Save<->Cancel on the action row.
+func TestSettingsFocusNav(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.settings.focus != m.settings.saveSlot() {
+		t.Fatalf("first tab should focus Save, got %d", m.settings.focus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRight})
+	if m.settings.focus != m.settings.cancelSlot() {
+		t.Fatalf("right from Save should focus Cancel, got %d", m.settings.focus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyLeft})
+	if m.settings.focus != m.settings.saveSlot() {
+		t.Fatalf("left from Cancel should focus Save, got %d", m.settings.focus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab}) // Save -> Cancel
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab}) // Cancel -> input (wrap)
+	if !m.settings.onInput() {
+		t.Fatalf("tab should wrap back to the input, focus = %d", m.settings.focus)
+	}
+}
+
+// TestSettingsEscCancels: esc closes the modal without writing anything.
+func TestSettingsEscCancels(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	m := newModel(p, testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ghost")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != modeMain {
+		t.Fatalf("esc should return to main, got %d", m.mode)
+	}
+	if m.cfg.Identity != "" {
+		t.Errorf("esc must not apply edits, identity = %q", m.cfg.Identity)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("esc must not write a config file at %s (stat err = %v)", p, err)
+	}
+}
+
+// TestSettingsSaveFailureKeepsModal: a save failure surfaces an error, keeps the
+// modal open, and leaves the in-memory config unchanged (no divergence from disk).
+func TestSettingsSaveFailureKeepsModal(t *testing.T) {
+	p := failingSavePath(t)
+	m := newModel(p, testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("alice@laptop")})
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.mode != modeSettings {
+		t.Fatalf("failed save should keep the modal open, got mode %d", m.mode)
+	}
+	if m.settings.err == "" {
+		t.Error("expected settings.err to be set after a failed save")
+	}
+	if m.cfg.Identity != "" {
+		t.Errorf("failed save must restore identity to empty, got %q", m.cfg.Identity)
+	}
+}
+
+// TestSettingsViewShowsTitleAndField guards the modal UI: it renders the title
+// and the Identity label.
+func TestSettingsViewShowsTitleAndField(t *testing.T) {
+	s := newSettings(&config.Config{})
+	s.setWidth(80)
+	view := s.View()
+	for _, want := range []string{"Client settings", "Identity", "[ Save ]", "[ Cancel ]"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("settings view missing %q:\n%s", want, view)
+		}
+	}
+}

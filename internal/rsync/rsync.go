@@ -39,11 +39,12 @@ type Endpoint struct {
 // add/update preserving modification times only — no deletion and no
 // perms/owner/group, which SMB and NFS mounts frequently cannot honor.
 type Options struct {
-	Delete        bool // rsync --delete
-	PreservePerms bool // rsync --perms
-	PreserveOwner bool // rsync --owner
-	PreserveGroup bool // rsync --group
-	Checksum      bool // rsync --checksum
+	Delete        bool     // rsync --delete
+	PreservePerms bool     // rsync --perms
+	PreserveOwner bool     // rsync --owner
+	PreserveGroup bool     // rsync --group
+	Checksum      bool     // rsync --checksum
+	Exclude       []string // rsync --exclude patterns
 }
 
 // Job is a single source→destination sync, expressed as a local and a remote
@@ -53,6 +54,13 @@ type Job struct {
 	Remote    Endpoint
 	Direction Direction
 	Options   Options
+	// Files, when non-empty, restricts the transfer to these paths (relative to
+	// the source root) via rsync --files-from. Empty means the whole tree.
+	Files []string
+	// OnChange, when non-nil, is called once per itemized change as rsync streams
+	// its output, giving callers live per-file progress. It runs on the goroutine
+	// driving the sync, so it must not block and must not touch UI state directly.
+	OnChange func(Change)
 }
 
 // ChangeType classifies a single itemized change.

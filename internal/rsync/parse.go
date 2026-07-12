@@ -14,28 +14,37 @@ func parseItemize(out string) Diff {
 	var changes []Change
 	sc := bufio.NewScanner(strings.NewReader(out))
 	for sc.Scan() {
-		line := sc.Text()
-		if strings.HasPrefix(line, "*deleting") {
-			if path := strings.TrimSpace(strings.TrimPrefix(line, "*deleting")); path != "" {
-				changes = append(changes, Change{Path: path, Type: Deleted})
-			}
-			continue
-		}
-		flags, path, ok := splitItemizeLine(line)
-		if !ok || path == "" || path == "./" {
-			continue
-		}
-		attrs := flags[2:]
-		if isDir(flags) && !allPlus(attrs) {
-			continue // attribute-only directory change is noise
-		}
-		if allPlus(attrs) {
-			changes = append(changes, Change{Path: path, Type: Created})
-		} else {
-			changes = append(changes, Change{Path: path, Type: Modified})
+		if c, ok := classifyItemizeLine(sc.Text()); ok {
+			changes = append(changes, c)
 		}
 	}
 	return Diff{Changes: changes, InSync: len(changes) == 0}
+}
+
+// classifyItemizeLine turns a single rsync --itemize-changes line into a Change,
+// reporting whether the line was a change worth keeping. It ignores the "./" root
+// entry, attribute-only directory churn, and any non-itemize chatter. It is the
+// single per-line classifier shared by the batch parser (parseItemize) and the
+// live streaming writer (itemizeWriter).
+func classifyItemizeLine(line string) (Change, bool) {
+	if strings.HasPrefix(line, "*deleting") {
+		if path := strings.TrimSpace(strings.TrimPrefix(line, "*deleting")); path != "" {
+			return Change{Path: path, Type: Deleted}, true
+		}
+		return Change{}, false
+	}
+	flags, path, ok := splitItemizeLine(line)
+	if !ok || path == "" || path == "./" {
+		return Change{}, false
+	}
+	attrs := flags[2:]
+	if isDir(flags) && !allPlus(attrs) {
+		return Change{}, false // attribute-only directory change is noise
+	}
+	if allPlus(attrs) {
+		return Change{Path: path, Type: Created}, true
+	}
+	return Change{Path: path, Type: Modified}, true
 }
 
 // splitItemizeLine splits a line into its 11-char itemize flag field and path,

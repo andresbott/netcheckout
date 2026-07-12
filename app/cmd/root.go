@@ -47,6 +47,10 @@ func newRootCommand() *cobra.Command {
 	cmd.AddCommand(
 		versionCmd(),
 		newListCmd(&cfgPath),
+		newStatusCmd(&cfgPath),
+		newCheckoutCmd(&cfgPath),
+		newSyncCmd(&cfgPath),
+		newCheckinCmd(&cfgPath),
 	)
 
 	return cmd

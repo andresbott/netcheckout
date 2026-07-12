@@ -10,6 +10,7 @@ import (
 var (
 	labelStyle = lipgloss.NewStyle().Faint(true)
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 )
 
 // --- Posting-style palette (256-colour). Only the colours/styles titledBox
@@ -26,6 +27,7 @@ var (
 	titleActiveStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	titleDimStyle    = lipgloss.NewStyle().Foreground(colDim)
 	selectedRowStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	profileNameStyle = lipgloss.NewStyle().Foreground(colTitle).Bold(true)
 	helpKeyStyle     = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	helpTextStyle    = lipgloss.NewStyle().Foreground(colDim)
 	headerAppStyle   = lipgloss.NewStyle().Foreground(colTitle).Bold(true)
