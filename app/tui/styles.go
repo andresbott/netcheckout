@@ -27,6 +27,7 @@ var (
 	titleActiveStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	titleDimStyle    = lipgloss.NewStyle().Foreground(colDim)
 	selectedRowStyle = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
+	profileNameStyle = lipgloss.NewStyle().Foreground(colTitle).Bold(true)
 	helpKeyStyle     = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	helpTextStyle    = lipgloss.NewStyle().Foreground(colDim)
 	headerAppStyle   = lipgloss.NewStyle().Foreground(colTitle).Bold(true)

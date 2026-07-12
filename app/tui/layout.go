@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/localstat"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -32,17 +33,22 @@ func hint(k, label string) string {
 func renderFooter(width int) string {
 	parts := []string{
 		hint("a", "Add"), hint("e", "Edit"), hint("d", "Delete"),
-		hint("↵", "Actions"), hint("q", "Quit"),
+		hint("i", "Identity"), hint("↵", "Actions"), hint("q", "Quit"),
 	}
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
 }
 
-// renderProfileFooter is the actions-substate bottom key-hint bar. force and
-// clean reflect the current toggle state for the mutating actions.
-func renderProfileFooter(width int, force, clean bool) string {
+// renderProfileFooter is the actions-substate bottom key-hint bar. force
+// reflects the current toggle state for the mutating actions. (The clean option
+// is check-in only and lives as a checkbox in that dialog, not on this bar.)
+// canScroll adds a PgUp/PgDn hint only when the Activity content overflows.
+func renderProfileFooter(width int, force, canScroll bool) string {
 	parts := []string{
 		hint("↵", "Run"), hint("↑↓", "Select"), hint("esc", "Back"),
-		hint("f", "force:"+onOff(force)), hint("c", "clean:"+onOff(clean)),
+		hint("f", "force:"+onOff(force)),
+	}
+	if canScroll {
+		parts = append(parts, hint("PgUp/PgDn", "Scroll"))
 	}
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
 }
@@ -55,22 +61,30 @@ func onOff(b bool) string {
 	return "off"
 }
 
-// renderDetails is the profile summary body: the two roots and (when scoped) the
-// subpaths, each prefixed with a sanity mark from res (nil while the check is
-// still running). The mark sits at the start of the line so titledBox's width
-// clip trims the path tail, never the mark.
+// detailLabel renders a fixed-width faint field label, shared by renderDetails
+// and contentsBlock so their value columns line up.
+func detailLabel(s string) string { return labelStyle.Render(fmt.Sprintf("%-8s", s)) }
+
+// renderDetails is the profile summary body, styled to match the Actions box: an
+// accented profile-name header, a spacer, the checkout state, then a marked row
+// per root, and (when scoped) a Subpaths section. Every row carries a one-space
+// left margin and each mark sits at the start of its line so titledBox's width
+// clip trims the path tail, never the mark. Sections are separated by a blank
+// line for breathing room.
 func renderDetails(name string, p config.Profile, res *sanity.Result, width int) string {
 	if name == "" {
-		return helpTextStyle.Render("No profile selected.")
+		return " " + helpTextStyle.Render("No profile selected.")
 	}
-	label := func(s string) string { return labelStyle.Render(fmt.Sprintf("%-7s", s)) }
 	var b strings.Builder
-	b.WriteString("  " + label("Name") + name + "\n")
-	b.WriteString(existMark(res, res != nil && res.LocalRoot) + " " + label("Local") + p.LocalRoot + "\n")
-	b.WriteString(existMark(res, res != nil && res.RemoteRoot) + " " + label("Remote") + p.RemoteRoot + "\n")
-	b.WriteString(checkoutLine(res))
+	// Accented name header + spacer, mirroring renderActions.
+	b.WriteString(" " + profileNameStyle.Render(name))
+	b.WriteString("\n")
+	// Checkout state sits above the roots as its own group.
+	b.WriteString("\n " + checkoutLine(res))
+	b.WriteString("\n\n " + existMark(res, res != nil && res.LocalRoot) + " " + detailLabel("Local") + p.LocalRoot)
+	b.WriteString("\n " + existMark(res, res != nil && res.RemoteRoot) + " " + detailLabel("Remote") + p.RemoteRoot)
 	if len(p.Subpaths) > 0 {
-		b.WriteString("\n" + labelStyle.Render(fmt.Sprintf("Subpaths (%d)", len(p.Subpaths))))
+		b.WriteString("\n\n " + labelStyle.Render(fmt.Sprintf("Subpaths (%d)", len(p.Subpaths))))
 		for i, sub := range p.Subpaths {
 			b.WriteString("\n " + subpathMark(res, i) + " " + sub)
 		}
@@ -91,9 +105,10 @@ func existMark(res *sanity.Result, ok bool) string {
 	}
 }
 
-// checkoutLine is the one-line checkout state: pending, unknown (remote not
-// mounted so no marker can be read), checked out, or the benign "not checked
-// out" (dim, a normal state rather than an error).
+// checkoutLine is the one-line checkout state, using a filled/hollow status dot
+// distinct from the roots' ✓/✗ existence marks: pending ("…"), unknown ("?",
+// remote not mounted so no marker can be read), a green ● when checked out, or a
+// dim ○ for the benign "not checked out" (a normal state, not an error).
 func checkoutLine(res *sanity.Result) string {
 	switch {
 	case res == nil:
@@ -101,9 +116,9 @@ func checkoutLine(res *sanity.Result) string {
 	case !res.RemoteRoot:
 		return helpTextStyle.Render("? checkout")
 	case res.CheckedOut:
-		return okStyle.Render("✓") + " checked out"
+		return okStyle.Render("●") + " checked out"
 	default:
-		return helpTextStyle.Render("✗ not checked out")
+		return helpTextStyle.Render("○ not checked out")
 	}
 }
 
@@ -121,4 +136,69 @@ func subpathMark(res *sanity.Result, i int) string {
 	default:
 		return errStyle.Render("✗")
 	}
+}
+
+// contentsBlock is the local-tree summary appended to the Details box after the
+// Status action scans a profile: a faint "Contents" header and aligned
+// Folders/Files/Size rows. It is empty while idle (no scan run) so Details is
+// unchanged during browsing, a faint pending line while a scan is in flight, and
+// a styled error if the scan failed. The returned string leads with "\n" when
+// non-empty so it appends cleanly onto the existing body.
+func contentsBlock(stats *localstat.Stats, scanning bool, err error) string {
+	switch {
+	case scanning:
+		return "\n\n " + helpTextStyle.Render("… scanning")
+	case err != nil:
+		return "\n\n " + errStyle.Render("scan failed: "+err.Error())
+	case stats == nil:
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n " + labelStyle.Render("Contents"))
+	// Three leading spaces align the value column with the marked rows above
+	// (" ✓ Local"), whose label starts after the reserved mark column.
+	b.WriteString("\n   " + detailLabel("Folders") + groupThousands(stats.Dirs))
+	b.WriteString("\n   " + detailLabel("Files") + groupThousands(stats.Files))
+	b.WriteString("\n   " + detailLabel("Size") + humanBytes(stats.Bytes))
+	return b.String()
+}
+
+// humanBytes renders a byte count as a base-1024 size: whole bytes below 1 KB,
+// otherwise one decimal with a binary unit suffix.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	units := []string{"KB", "MB", "GB", "TB", "PB"}
+	if exp >= len(units) {
+		exp = len(units) - 1
+	}
+	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), units[exp])
+}
+
+// groupThousands formats a non-negative count with comma thousands separators,
+// e.g. 1234567 -> "1,234,567".
+func groupThousands(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	pre := len(s) % 3
+	if pre > 0 {
+		b.WriteString(s[:pre])
+	}
+	for i := pre; i < len(s); i += 3 {
+		if b.Len() > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
 }

@@ -94,11 +94,46 @@ func (s *Syncer) runRsync(ctx context.Context, j Job, dryRun bool, op string) (s
 	if r == nil {
 		r = execRun
 	}
-	res, err := r(ctx, s.bin(), args, s.Output)
+	tee := s.Output
+	if j.OnChange != nil {
+		iw := &itemizeWriter{onChange: j.OnChange}
+		if tee != nil {
+			tee = io.MultiWriter(tee, iw)
+		} else {
+			tee = iw
+		}
+	}
+	res, err := r(ctx, s.bin(), args, tee)
 	if err != nil {
 		return "", &Error{Op: op, Args: args, Stderr: res.stderr, ExitCode: res.exitCode, Err: err}
 	}
 	return res.stdout, nil
+}
+
+// itemizeWriter parses rsync --itemize-changes output as it streams, invoking
+// onChange for every recognized change the instant its line completes. Writes may
+// split a line across calls, so partial input is buffered until the next newline.
+// Non-itemize chatter (and any stderr the runner tees in) is ignored, exactly as
+// the batch parser ignores it.
+type itemizeWriter struct {
+	onChange func(Change)
+	buf      []byte
+}
+
+func (w *itemizeWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := strings.TrimRight(string(w.buf[:i]), "\r")
+		w.buf = w.buf[i+1:]
+		if c, ok := classifyItemizeLine(line); ok {
+			w.onChange(c)
+		}
+	}
+	return len(p), nil
 }
 
 // Diff performs a dry run and returns the changes a Sync of the same job would make.

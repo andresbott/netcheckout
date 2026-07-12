@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/localstat"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -26,6 +27,9 @@ func TestRenderFooterFitsAndHasHints(t *testing.T) {
 	}
 	if !strings.Contains(f, "Add") || !strings.Contains(f, "Quit") {
 		t.Errorf("footer missing hints: %q", f)
+	}
+	if !strings.Contains(f, "Identity") {
+		t.Errorf("footer missing Identity hint: %q", f)
 	}
 }
 
@@ -130,5 +134,50 @@ func TestRenderDetailsSubpathMarksPendingAndUnknown(t *testing.T) {
 	unknown := renderDetails("p", p, &sanity.Result{RemoteRoot: false}, 40)
 	if !strings.Contains(unknown, "? zeta") || !strings.Contains(unknown, "? qux") {
 		t.Errorf("unmounted remote should render '?' marks on each subpath line:\n%s", unknown)
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	cases := map[int64]string{
+		0:       "0 B",
+		512:     "512 B",
+		1024:    "1.0 KB",
+		1536:    "1.5 KB",
+		1048576: "1.0 MB",
+	}
+	for in, want := range cases {
+		if got := humanBytes(in); got != want {
+			t.Errorf("humanBytes(%d) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+func TestGroupThousands(t *testing.T) {
+	cases := map[int]string{0: "0", 12: "12", 999: "999", 1234: "1,234", 1234567: "1,234,567"}
+	for in, want := range cases {
+		if got := groupThousands(in); got != want {
+			t.Errorf("groupThousands(%d) = %q; want %q", in, got, want)
+		}
+	}
+}
+
+func TestContentsBlockIdleIsEmpty(t *testing.T) {
+	if got := contentsBlock(nil, false, nil); got != "" {
+		t.Errorf("idle contentsBlock should be empty, got %q", got)
+	}
+}
+
+func TestContentsBlockScanning(t *testing.T) {
+	if got := contentsBlock(nil, true, nil); !strings.Contains(got, "scanning") {
+		t.Errorf("scanning contentsBlock should show a pending line, got %q", got)
+	}
+}
+
+func TestContentsBlockShowsStats(t *testing.T) {
+	got := contentsBlock(&localstat.Stats{Dirs: 12, Files: 3456, Bytes: 1536}, false, nil)
+	for _, want := range []string{"Contents", "Folders", "12", "Files", "3,456", "Size", "1.5 KB"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("contentsBlock missing %q:\n%s", want, got)
+		}
 	}
 }

@@ -91,6 +91,22 @@ func sortedPlan(p *Plan) {
 	sort.Strings(p.Conflicts)
 }
 
+// PlanFor scans localRoot and remoteRoot over relpaths and classifies every path
+// against base (the checkout baseline manifest) into a Plan. It is the single
+// engine behind both sync (which applies the plan) and status (which previews
+// it), so the two can never disagree about what a reconcile would do.
+func PlanFor(base map[string]baseline.FileState, localRoot, remoteRoot string, relpaths []string) (Plan, error) {
+	local, err := baseline.Scan(localRoot, relpaths)
+	if err != nil {
+		return Plan{}, err
+	}
+	remote, err := baseline.Scan(remoteRoot, relpaths)
+	if err != nil {
+		return Plan{}, err
+	}
+	return Classify(base, local, remote, localRoot, remoteRoot)
+}
+
 // Classify compares the current local and remote manifests against the baseline
 // and buckets every path into a Plan per the §9.5 table. localRoot/remoteRoot
 // are needed to hash a file when the fast path is inconclusive.

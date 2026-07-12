@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/andresbott/netcheckout/internal/marker"
+	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/rsync"
 )
 
@@ -18,6 +19,10 @@ type Options struct {
 	Force  bool
 	DryRun bool
 	Clean  bool // checkin only
+	// OnApply, when non-nil, is called once per applied change as Sync/Checkin
+	// carry the reconcile out, giving callers live per-file progress. It runs on
+	// the goroutine driving the action and is never called on a dry run.
+	OnApply func(reconcile.Event)
 }
 
 // Report describes what an action did (or would do, for a dry run).
@@ -61,14 +66,4 @@ func normalizeRelpath(rel string) string {
 		return "."
 	}
 	return filepath.ToSlash(filepath.Clean(rel))
-}
-
-// mergeRelpath returns existing with rel added if not already present.
-func mergeRelpath(existing []string, rel string) []string {
-	for _, e := range existing {
-		if e == rel {
-			return existing
-		}
-	}
-	return append(append([]string{}, existing...), rel)
 }

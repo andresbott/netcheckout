@@ -1,43 +1,47 @@
-// Package status computes whether a profile's local and remote roots are in
-// sync, using rsync dry runs in both directions.
+// Package status previews whether a profile's local and remote roots are in
+// sync. It is a read-only dry-run of sync: it loads the checkout baseline and
+// runs the same three-way reconcile engine (internal/reconcile) that sync uses
+// to apply changes, so what status reports and what sync does can never diverge.
+// The preview is grouped per configured subpath (target), or a single "(root)"
+// group when the profile has no subpaths.
 package status
 
 import (
-	"context"
 	"fmt"
 	"os"
 
+	"github.com/andresbott/netcheckout/internal/baseline"
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/marker"
-	"github.com/andresbott/netcheckout/internal/rsync"
-	"github.com/andresbott/netcheckout/internal/sanity"
+	"github.com/andresbott/netcheckout/internal/reconcile"
 )
 
-// Differ is satisfied by *rsync.Syncer; lets tests inject a fake.
-type Differ interface {
-	Diff(ctx context.Context, j rsync.Job) (rsync.Diff, error)
+// Change is one planned copy: a path and whether it modifies an existing file
+// (in the baseline) or adds a new one.
+type Change struct {
+	Path   string
+	Modify bool // true = an existing file changed; false = a newly added file
 }
 
-// TargetStatus is the bidirectional diff for one target of a profile: the
-// whole root when no subpaths are declared, or one declared subpath.
+// TargetStatus is the three-way reconcile plan for one target of a profile — the
+// whole root when no subpaths are declared, or one declared subpath — split into
+// the buckets a sync uses.
 type TargetStatus struct {
-	Subpath      string
-	Pull         rsync.Diff // remote -> local: what a checkout/sync-down would change
-	Push         rsync.Diff // local -> remote: what a check-in would change
-	LocalMissing bool       // Local doesn't exist yet; Push was not attempted
+	Subpath       string
+	Push          []Change // local -> remote (add or modify)
+	Pull          []Change // remote -> local (add or modify)
+	LocalDeletes  []string // mirror a remote delete by removing the local file
+	RemoteDeletes []string // propagate a local delete by removing the remote file
+	Conflicts     []string // changed on both sides; a sync would stop
 }
 
-// InSync reports whether this target has no pending changes in either
-// direction. When LocalMissing, only Pull is meaningful (Push was skipped).
+// InSync reports whether this target has no pending changes in any bucket.
 func (t TargetStatus) InSync() bool {
-	if t.LocalMissing {
-		return t.Pull.InSync
-	}
-	return t.Pull.InSync && t.Push.InSync
+	return len(t.Push)+len(t.Pull)+len(t.LocalDeletes)+len(t.RemoteDeletes)+len(t.Conflicts) == 0
 }
 
-// Label is a human-readable name for this target: "(root)" for the whole
-// root, or the declared subpath.
+// Label is a human-readable name for this target: "(root)" for the whole root,
+// or the declared subpath.
 func (t TargetStatus) Label() string {
 	return label(t.Subpath)
 }
@@ -49,45 +53,19 @@ func label(subpath string) string {
 	return subpath
 }
 
-func computeTarget(ctx context.Context, d Differ, t config.Target) (TargetStatus, error) {
-	_, statErr := os.Stat(t.Local)
-	localMissing := os.IsNotExist(statErr)
-
-	pull, err := d.Diff(ctx, rsync.Job{
-		Local:     rsync.Endpoint{Path: t.Local},
-		Remote:    rsync.Endpoint{Path: t.Remote},
-		Direction: rsync.Pull,
-		Options:   rsync.Options{Exclude: []string{marker.FileName}},
-	})
-	if err != nil {
-		return TargetStatus{}, fmt.Errorf("%s: pull diff: %w", label(t.Subpath), err)
-	}
-
-	if localMissing {
-		return TargetStatus{Subpath: t.Subpath, Pull: pull, LocalMissing: true}, nil
-	}
-
-	push, err := d.Diff(ctx, rsync.Job{
-		Local:     rsync.Endpoint{Path: t.Local},
-		Remote:    rsync.Endpoint{Path: t.Remote},
-		Direction: rsync.Push,
-		Options:   rsync.Options{Exclude: []string{marker.FileName}},
-	})
-	if err != nil {
-		return TargetStatus{}, fmt.Errorf("%s: push diff: %w", label(t.Subpath), err)
-	}
-	return TargetStatus{Subpath: t.Subpath, Pull: pull, Push: push}, nil
-}
-
-// ProfileStatus is the status across every target of a profile.
+// ProfileStatus is the reconcile preview across every target of a profile. When
+// CheckedOut is false the profile has no marker; when CheckedOut is true but
+// HasBaseline is false the profile is checked out but this machine holds no local
+// baseline, so no plan could be computed and Targets is empty.
 type ProfileStatus struct {
-	CheckedOut bool // a checkout marker is present; false means Compute stopped early and Targets is empty
-	Targets    []TargetStatus
+	CheckedOut  bool
+	HasBaseline bool
+	Targets     []TargetStatus
 }
 
 // InSync reports whether every target of the profile is in sync.
-func (p ProfileStatus) InSync() bool {
-	for _, t := range p.Targets {
+func (s ProfileStatus) InSync() bool {
+	for _, t := range s.Targets {
 		if !t.InSync() {
 			return false
 		}
@@ -95,16 +73,35 @@ func (p ProfileStatus) InSync() bool {
 	return true
 }
 
-// Compute runs Pull and Push dry-run diffs for every target the profile
-// resolves to. It returns an error only for a real failure (the remote root
-// missing, invalid declared subpaths, or the differ itself erroring) --
-// finding differences is a normal result captured in the returned
-// ProfileStatus, not an error. On a mid-loop failure the targets computed so
-// far are still returned alongside the error.
-func Compute(ctx context.Context, d Differ, p config.Profile) (ProfileStatus, error) {
+// Compute loads the profile's baseline and previews the three-way reconcile plan,
+// grouped per target, against the current local and remote trees. It errors only
+// for a real failure (the remote root missing, an invalid subpath, or a scan/hash
+// failure); pending changes are a normal result captured in the returned
+// ProfileStatus. name is the profile name (the baseline's state-file key).
+func Compute(name string, p config.Profile) (ProfileStatus, error) {
 	remoteRoot := config.ExpandRoot(p.RemoteRoot)
+	localRoot := config.ExpandRoot(p.LocalRoot)
 	if info, err := os.Stat(remoteRoot); err != nil || !info.IsDir() {
 		return ProfileStatus{}, fmt.Errorf("remote root %s is not mounted", remoteRoot)
+	}
+
+	// No marker means the profile is not checked out: nothing to preview.
+	_, exists, err := marker.Read(remoteRoot)
+	if err != nil {
+		return ProfileStatus{}, err
+	}
+	if !exists {
+		return ProfileStatus{CheckedOut: false}, nil
+	}
+
+	// A marker without a local baseline means the checkout is held elsewhere (or
+	// the baseline was lost): report checked out, but no plan can be computed.
+	b, hasBase, err := baseline.Load(name)
+	if err != nil {
+		return ProfileStatus{}, err
+	}
+	if !hasBase {
+		return ProfileStatus{CheckedOut: true, HasBaseline: false}, nil
 	}
 
 	targets, err := p.Targets()
@@ -112,21 +109,44 @@ func Compute(ctx context.Context, d Differ, p config.Profile) (ProfileStatus, er
 		return ProfileStatus{}, err
 	}
 
-	// A profile that is not checked out has nothing to diff: stop early rather
-	// than running rsync. "checked out" is the marker check from internal/sanity
-	// (aggregated across targets). Ordering matters: the remote-mounted and
-	// invalid-subpath errors above still take precedence.
-	if !sanity.Check(p).CheckedOut {
-		return ProfileStatus{CheckedOut: false}, nil
-	}
-
-	out := ProfileStatus{Targets: make([]TargetStatus, 0, len(targets)), CheckedOut: true}
+	out := ProfileStatus{CheckedOut: true, HasBaseline: true, Targets: make([]TargetStatus, 0, len(targets))}
 	for _, t := range targets {
-		ts, err := computeTarget(ctx, d, t)
-		if err != nil {
-			return out, err
+		rel := t.Subpath
+		if rel == "" {
+			rel = "."
 		}
-		out.Targets = append(out.Targets, ts)
+		// The shared engine scans only this target's subtree on both sides;
+		// baseline entries outside it fall out as no-ops, so passing the whole
+		// baseline manifest is safe and needs no pre-filtering.
+		plan, err := reconcile.PlanFor(b.Files, localRoot, remoteRoot, []string{rel})
+		if err != nil {
+			return ProfileStatus{}, fmt.Errorf("%s: %w", label(t.Subpath), err)
+		}
+		out.Targets = append(out.Targets, targetFromPlan(t.Subpath, plan, b.Files))
 	}
 	return out, nil
+}
+
+// targetFromPlan projects a reconcile.Plan into a TargetStatus, labelling each
+// pushed or pulled path as a modify (already in the baseline) or an add (not yet).
+func targetFromPlan(subpath string, plan reconcile.Plan, base map[string]baseline.FileState) TargetStatus {
+	changes := func(paths []string) []Change {
+		if len(paths) == 0 {
+			return nil
+		}
+		out := make([]Change, 0, len(paths))
+		for _, p := range paths {
+			_, inBase := base[p]
+			out = append(out, Change{Path: p, Modify: inBase})
+		}
+		return out
+	}
+	return TargetStatus{
+		Subpath:       subpath,
+		Push:          changes(plan.Push),
+		Pull:          changes(plan.Pull),
+		LocalDeletes:  plan.LocalDeletes,
+		RemoteDeletes: plan.RemoteDeletes,
+		Conflicts:     plan.Conflicts,
+	}
 }

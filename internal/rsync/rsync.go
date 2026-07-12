@@ -57,6 +57,10 @@ type Job struct {
 	// Files, when non-empty, restricts the transfer to these paths (relative to
 	// the source root) via rsync --files-from. Empty means the whole tree.
 	Files []string
+	// OnChange, when non-nil, is called once per itemized change as rsync streams
+	// its output, giving callers live per-file progress. It runs on the goroutine
+	// driving the sync, so it must not block and must not touch UI state directly.
+	OnChange func(Change)
 }
 
 // ChangeType classifies a single itemized change.

@@ -5,16 +5,13 @@ import (
 	"strings"
 
 	"github.com/andresbott/netcheckout/internal/lifecycle"
-	"github.com/andresbott/netcheckout/internal/rsync"
+	"github.com/andresbott/netcheckout/internal/localstat"
+	"github.com/andresbott/netcheckout/internal/reconcile"
+	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
-
-// profileActions are the operations the Actions box offers for a profile:
-// Status runs internal/status; Checkout and Sync run their lifecycle.Runner
-// action directly; Check-in opens the shared confirm modal first (see
-// updateProfile and confirm.go).
-var profileActions = []string{"Status", "Checkout", "Check-in", "Sync"}
 
 // profileModel is the state for the Actions box: which profile is open, which
 // action row is selected, and the outcome of the most recent Status run. The
@@ -27,11 +24,45 @@ type profileModel struct {
 	result       *status.ProfileStatus // last successful Status result; nil until run
 	err          error                 // last Status error; nil if none
 	acting       bool                  // a mutating action (Checkout) is in flight
+	applied      []reconcile.Event     // changes streamed live by the in-flight/last Sync or Check-in
 	actionReport *lifecycle.Report     // last successful action's outcome; nil until run
 	actionErr    error                 // last action error; nil if none
+	scanning     bool                  // a local file-stat scan is in flight (part of Status)
+	fileStats    *localstat.Stats      // last successful local scan; nil until run
+	statErr      error                 // last local-scan error; nil if none
+	statusScroll int                   // first visible Activity line; scrolled with PgUp/PgDn
 }
 
 func newProfileView(name string) profileModel { return profileModel{name: name} }
+
+// visibleActions returns only the actions that apply to the profile's known
+// checkout state (sanity), in display order — inapplicable actions are hidden,
+// not greyed out. A not-checked-out profile can only be checked out; a
+// checked-out one offers Status, Sync, then Check-in. A nil sanity result (the
+// stat-only check hasn't returned yet) yields no actions, and the box shows a
+// "checking…" note instead. The lifecycle Runner stays the real guard.
+func visibleActions(r *sanity.Result) []string {
+	switch {
+	case r == nil:
+		return nil
+	case r.CheckedOut:
+		return []string{"Status", "Sync", "Check-in"}
+	default:
+		return []string{"Checkout"}
+	}
+}
+
+// clampCursor keeps the cursor within [0, n) after the visible action list
+// changes length (e.g. a checkout flips the list from [Checkout] to
+// [Status, Sync, Check-in], or a check-in the other way).
+func (p *profileModel) clampCursor(n int) {
+	if p.cursor >= n {
+		p.cursor = n - 1
+	}
+	if p.cursor < 0 {
+		p.cursor = 0
+	}
+}
 
 func (p *profileModel) moveUp() {
 	if p.cursor > 0 {
@@ -39,27 +70,48 @@ func (p *profileModel) moveUp() {
 	}
 }
 
-func (p *profileModel) moveDown() {
-	if p.cursor < len(profileActions)-1 {
+func (p *profileModel) moveDown(n int) {
+	if p.cursor < n-1 {
 		p.cursor++
 	}
 }
 
-// renderActions is the Actions box body: one row per action, the selected row
-// marked and accented (mirrors listModel.view).
-func renderActions(cursor, width int) string {
+// actionGlyph is the leading icon for an action row: a pull arrow for Checkout,
+// a summary bars glyph for Status, a two-way arrow for Sync, and a push arrow
+// for Check-in. All are single-width so the rows stay aligned.
+func actionGlyph(a string) string {
+	switch a {
+	case "Checkout":
+		return "↓"
+	case "Status":
+		return "≡"
+	case "Sync":
+		return "⇅"
+	case "Check-in":
+		return "↑"
+	default:
+		return " "
+	}
+}
+
+// renderActions is the Actions box body: one glyph-prefixed row per applicable
+// action (visibleActions) — the selected row marked and accented. The profile
+// name and checkout-state indicator both live in the Details box below, so the
+// Actions box stays focused on the action list; before sanity has returned there
+// are no actions.
+func renderActions(cursor, width int, res *sanity.Result) string {
 	var b strings.Builder
-	for i, a := range profileActions {
+	for i, a := range visibleActions(res) {
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		prefix := "  "
-		line := a
+		var row string
 		if i == cursor {
-			prefix = "▸ "
-			line = selectedRowStyle.Render(a)
+			row = "▸ " + selectedRowStyle.Render(actionGlyph(a)+" "+a)
+		} else {
+			row = "  " + helpTextStyle.Render(actionGlyph(a)) + " " + a
 		}
-		b.WriteString(ansi.Truncate(prefix+line, width, ""))
+		b.WriteString(ansi.Truncate(row, width, ""))
 	}
 	return b.String()
 }
@@ -72,94 +124,168 @@ func renderActivity() string {
 
 // renderStatus is the Activity box body while a profile's actions are showing:
 // the idle placeholder before Status has run, an in-flight "Checking…", a styled
-// error, or the formatted result of the most recent Status run. titledBox clips
-// the body to the panel, so no manual width handling is needed here.
+// error, or the formatted result of the most recent Status run. width is the
+// inner panel width, used to size the per-target dividers; titledBox clips the
+// body to the panel, so no other width handling is needed here. The profile name
+// is not repeated — the Details box already shows it.
 //
 // A stopped-on-conflict action carries both a report (with the conflicting
 // paths) and an error, so the conflict path list takes precedence over the
 // bare error message; any other action error (e.g. a lock/mount failure, where
 // the report is empty) still renders as an error rather than an empty body.
-func renderStatus(p profileModel) string {
+func renderStatus(p profileModel, width int) string {
 	switch {
 	case p.acting:
-		return p.name + "\n  Working…"
+		// Show applied changes as they stream in; before the first one arrives,
+		// a bare "Working…".
+		return appliedBody(p.applied, "Working…")
 	case p.actionReport != nil && len(p.actionReport.Conflicts) > 0:
-		return actionBody(p.name, *p.actionReport)
+		return conflictBody(*p.actionReport)
 	case p.actionErr != nil:
-		return p.name + "\n  " + errStyle.Render(p.actionErr.Error())
+		return errStyle.Render(p.actionErr.Error())
 	case p.actionReport != nil:
-		return actionBody(p.name, *p.actionReport)
+		return actionBody(p)
 	case p.checking:
-		return p.name + "\n  Checking…"
+		return "Checking…"
 	case p.err != nil:
-		return p.name + "\n  " + errStyle.Render(p.err.Error())
+		return errStyle.Render(p.err.Error())
 	case p.result != nil:
-		return statusBody(p.name, *p.result)
+		return statusBody(*p.result, width)
 	default:
 		return renderActivity()
 	}
 }
 
-// actionBody formats a completed mutating action's Report: conflicts (nothing
-// written) take precedence, otherwise the action name and how many items were
-// pulled.
-func actionBody(name string, rep lifecycle.Report) string {
-	var b strings.Builder
-	b.WriteString(name)
-	if len(rep.Conflicts) > 0 {
-		b.WriteString("\n  conflicts — nothing written:")
-		for _, c := range rep.Conflicts {
-			fmt.Fprintf(&b, "\n    ! %s", c)
-		}
-		return b.String()
+// actionBody formats a completed mutating action: the full list of applied
+// changes (in the same rows the live stream used) followed by a one-line summary.
+func actionBody(p profileModel) string {
+	rep := *p.actionReport
+	dels := len(rep.RemovedRemote) + len(rep.RemovedLocal)
+	summary := fmt.Sprintf("%s: pull %d, push %d, del %d",
+		rep.Action, len(rep.Pulled), len(rep.Pushed), dels)
+	if len(p.applied) == 0 {
+		return summary
 	}
-	fmt.Fprintf(&b, "\n  %s: %d pulled", rep.Action, len(rep.Pulled))
+	return appliedBody(p.applied, "") + "\n\n" + summary
+}
+
+// conflictBody renders a stopped-on-conflict action: nothing was written, so the
+// conflicting paths are listed instead of an applied change list.
+func conflictBody(rep lifecycle.Report) string {
+	var b strings.Builder
+	b.WriteString("conflicts — nothing written:")
+	for _, c := range rep.Conflicts {
+		fmt.Fprintf(&b, "\n  ! %s", c)
+	}
 	return b.String()
 }
 
-// statusBody formats a computed ProfileStatus: the profile name, then per target
-// its label and the push/pull direction lines, each change prefixed with a mark.
-func statusBody(name string, st status.ProfileStatus) string {
-	var b strings.Builder
-	b.WriteString(name)
+// appliedBody renders a list of applied changes as status-view rows (verb → side
+// path), or placeholder when the list is empty.
+func appliedBody(events []reconcile.Event, placeholder string) string {
+	if len(events) == 0 {
+		return placeholder
+	}
+	rows := make([]string, len(events))
+	for i, e := range events {
+		rows[i] = changeRow(appliedVerb(e.Kind), sideLabel(e.Side), e.Path)
+	}
+	return strings.Join(rows, "\n")
+}
+
+// appliedVerb maps an applied change's kind to its status-view verb and style.
+func appliedVerb(k reconcile.EventKind) verbStyle {
+	switch k {
+	case reconcile.EventAdd:
+		return verbStyle{"add", okStyle}
+	case reconcile.EventDelete:
+		return verbStyle{"delete", errStyle}
+	default:
+		return verbStyle{"modify", lipgloss.NewStyle()}
+	}
+}
+
+// sideLabel is the side token an applied change landed on.
+func sideLabel(s reconcile.Side) string {
+	if s == reconcile.SideRemote {
+		return "remote"
+	}
+	return "local"
+}
+
+// statusBody formats a computed ProfileStatus as a scrollable change list: the
+// three-way reconcile plan a sync would carry out, grouped per target. Each
+// target shows its label followed by one row per pending change, read as a verb
+// and the side it lands on ("add → remote", "delete → local", "conflict →
+// both"), or "no changes" when that target is in sync. Targets are separated by a
+// width-spanning divider. width sizes that divider; titledBox clips overlong rows.
+func statusBody(st status.ProfileStatus, width int) string {
 	if !st.CheckedOut {
-		b.WriteString("\n  not checked out")
-		return b.String()
+		return "not checked out"
 	}
-	if st.InSync() {
-		b.WriteString("\n  in sync")
-		return b.String()
+	if !st.HasBaseline {
+		return "checked out, but no local baseline on this machine"
 	}
-	for _, t := range st.Targets {
-		b.WriteString("\n  " + t.Label())
-		if t.LocalMissing {
-			fmt.Fprintf(&b, "\n    not checked out locally (%d items)", len(t.Pull.Changes))
+	divider := helpTextStyle.Render(strings.Repeat("─", width))
+	var b strings.Builder
+	for i, t := range st.Targets {
+		if i > 0 {
+			b.WriteString("\n" + divider + "\n")
+		}
+		b.WriteString(t.Label())
+		if t.InSync() {
+			b.WriteString("\n  no changes")
 			continue
 		}
-		writeDirection(&b, "push (local -> remote)", t.Push)
-		writeDirection(&b, "pull (remote -> local)", t.Pull)
+		// Copies: pushes travel local → remote, pulls remote → local. Deletes
+		// mirror or propagate a removal; conflicts changed on both sides.
+		for _, c := range t.Push {
+			writeChange(&b, changeVerb(c.Modify), "remote", c.Path)
+		}
+		for _, c := range t.Pull {
+			writeChange(&b, changeVerb(c.Modify), "local", c.Path)
+		}
+		for _, p := range t.LocalDeletes {
+			writeChange(&b, verbStyle{"delete", errStyle}, "local", p)
+		}
+		for _, p := range t.RemoteDeletes {
+			writeChange(&b, verbStyle{"delete", errStyle}, "remote", p)
+		}
+		for _, p := range t.Conflicts {
+			writeChange(&b, verbStyle{"conflict", errStyle}, "both", p)
+		}
 	}
 	return b.String()
 }
 
-func writeDirection(b *strings.Builder, label string, d rsync.Diff) {
-	if d.InSync {
-		fmt.Fprintf(b, "\n    %s: in sync", label)
-		return
-	}
-	fmt.Fprintf(b, "\n    %s: %d changes", label, len(d.Changes))
-	for _, c := range d.Changes {
-		fmt.Fprintf(b, "\n      %s %s", changeMark(c.Type), c.Path)
-	}
+// verbStyle pairs a change's action word with its highlight style.
+type verbStyle struct {
+	verb  string
+	style lipgloss.Style
 }
 
-func changeMark(t rsync.ChangeType) string {
-	switch t {
-	case rsync.Created:
-		return "+"
-	case rsync.Deleted:
-		return "-"
-	default:
-		return "M"
+// writeChange appends one change row under the current target, newline-prefixed
+// so it hangs off the preceding target label or row.
+func writeChange(b *strings.Builder, v verbStyle, side, path string) {
+	b.WriteString("\n" + changeRow(v, side, path))
+}
+
+// changeRow formats one change row: a coloured verb, an arrow to the side it
+// lands on, and the path. The verb and side tokens are padded before styling so
+// the ANSI codes never disturb the column alignment.
+func changeRow(v verbStyle, side, path string) string {
+	return fmt.Sprintf("  %s → %s  %s",
+		v.style.Render(fmt.Sprintf("%-8s", v.verb)),
+		labelStyle.Render(fmt.Sprintf("%-6s", side)),
+		path,
+	)
+}
+
+// changeVerb maps a copy's add/modify flag to its action word and highlight
+// style: a green "add" for a new file, a plain "modify" for an existing one.
+func changeVerb(modify bool) verbStyle {
+	if modify {
+		return verbStyle{"modify", lipgloss.NewStyle()}
 	}
+	return verbStyle{"add", okStyle}
 }

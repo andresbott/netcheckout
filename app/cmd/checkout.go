@@ -9,6 +9,7 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
+	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/spf13/cobra"
 )
@@ -51,7 +52,12 @@ func newCheckoutCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Comman
 			if len(args) == 2 {
 				rel = args[1]
 			}
-			rep, err := runner.Checkout(context.Background(), name, p, id, rel, lifecycle.Options{Force: force, DryRun: dryRun})
+			opts := lifecycle.Options{Force: force, DryRun: dryRun}
+			if !dryRun {
+				out := cmd.OutOrStdout()
+				opts.OnApply = func(e reconcile.Event) { printApplyEvent(out, e) }
+			}
+			rep, err := runner.Checkout(context.Background(), name, p, id, rel, opts)
 			if err != nil {
 				return err
 			}

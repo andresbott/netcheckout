@@ -8,6 +8,7 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
+	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/spf13/cobra"
 )
@@ -46,7 +47,12 @@ func newCheckinCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command
 					s.Output = cmd.ErrOrStderr()
 				}
 			}
-			rep, err := runner.Checkin(context.Background(), name, p, id, lifecycle.Options{Force: force, DryRun: dryRun, Clean: clean})
+			opts := lifecycle.Options{Force: force, DryRun: dryRun, Clean: clean}
+			if !dryRun {
+				out := cmd.OutOrStdout()
+				opts.OnApply = func(e reconcile.Event) { printApplyEvent(out, e) }
+			}
+			rep, err := runner.Checkin(context.Background(), name, p, id, opts)
 			printReconcileReport(cmd.OutOrStdout(), name, rep)
 			return err
 		},

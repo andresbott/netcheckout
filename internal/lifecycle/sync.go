@@ -49,16 +49,7 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 		relpaths = []string{rel}
 	}
 
-	localScan, err := baseline.Scan(localRoot, relpaths)
-	if err != nil {
-		return nil, nil, err
-	}
-	remoteScan, err := baseline.Scan(remoteRoot, relpaths)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	plan, err := reconcile.Classify(b.Files, localScan, remoteScan, localRoot, remoteRoot)
+	plan, err := reconcile.PlanFor(b.Files, localRoot, remoteRoot, relpaths)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -83,7 +74,7 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 	// so the report reflects what actually happened, not what was classified.
 	rep.Conflicts = nil
 
-	applied, err := reconcile.Apply(ctx, r.Syncer, localRoot, remoteRoot, plan, opts.Force)
+	applied, err := reconcile.Apply(ctx, r.Syncer, localRoot, remoteRoot, plan, opts.Force, opts.OnApply)
 	if err != nil {
 		var ce *reconcile.ConflictError
 		if errors.As(err, &ce) {

@@ -1,24 +1,18 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"io"
 
 	"github.com/andresbott/netcheckout/internal/config"
-	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/spf13/cobra"
 )
 
 func newStatusCmd(cfgPath *string) *cobra.Command {
-	return newStatusCmdWithDiffer(cfgPath, rsync.New())
-}
-
-func newStatusCmdWithDiffer(cfgPath *string, d status.Differ) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status <profile>",
-		Short: "show whether a profile's local folder is in sync with its remote",
+		Short: "preview what a sync would do (push, pull, delete, conflicts)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolvePath(*cfgPath)
@@ -34,7 +28,7 @@ func newStatusCmdWithDiffer(cfgPath *string, d status.Differ) *cobra.Command {
 			if !ok {
 				return fmt.Errorf("profile %q not found", name)
 			}
-			st, err := status.Compute(context.Background(), d, profile)
+			st, err := status.Compute(name, profile)
 			if err != nil {
 				return err
 			}
@@ -44,45 +38,52 @@ func newStatusCmdWithDiffer(cfgPath *string, d status.Differ) *cobra.Command {
 	}
 }
 
+// printStatus renders the three-way reconcile plan a sync would carry out,
+// grouped per target.
 func printStatus(w io.Writer, name string, p config.Profile, st status.ProfileStatus) {
 	_, _ = fmt.Fprintf(w, "%s (local: %s, remote: %s)\n", name, p.LocalRoot, p.RemoteRoot)
 	if !st.CheckedOut {
 		_, _ = fmt.Fprintln(w, "  not checked out")
 		return
 	}
-	if st.InSync() {
-		_, _ = fmt.Fprintln(w, "  in sync")
+	if !st.HasBaseline {
+		_, _ = fmt.Fprintln(w, "  checked out, but no local baseline on this machine")
 		return
 	}
 	for _, t := range st.Targets {
 		_, _ = fmt.Fprintf(w, "  %s\n", t.Label())
-		if t.LocalMissing {
-			_, _ = fmt.Fprintf(w, "    not checked out locally -- pull (remote -> local) would create %d items\n", len(t.Pull.Changes))
+		if t.InSync() {
+			_, _ = fmt.Fprintln(w, "    in sync")
 			continue
 		}
-		printDirection(w, "push (local -> remote)", t.Push)
-		printDirection(w, "pull (remote -> local)", t.Pull)
+		printChanges(w, "push (local -> remote)", t.Push)
+		printChanges(w, "pull (remote -> local)", t.Pull)
+		printPaths(w, "del-local (mirror remote delete)", t.LocalDeletes)
+		printPaths(w, "del-remote (propagate local delete)", t.RemoteDeletes)
+		printPaths(w, "conflicts (changed on both sides)", t.Conflicts)
 	}
 }
 
-func printDirection(w io.Writer, label string, d rsync.Diff) {
-	if d.InSync {
-		_, _ = fmt.Fprintf(w, "    %s: in sync\n", label)
+func printChanges(w io.Writer, label string, changes []status.Change) {
+	if len(changes) == 0 {
 		return
 	}
-	_, _ = fmt.Fprintf(w, "    %s: %d changes\n", label, len(d.Changes))
-	for _, c := range d.Changes {
-		_, _ = fmt.Fprintf(w, "      %s %s\n", changeMark(c.Type), c.Path)
+	_, _ = fmt.Fprintf(w, "    %s: %d changes\n", label, len(changes))
+	for _, c := range changes {
+		mark := "+"
+		if c.Modify {
+			mark = "M"
+		}
+		_, _ = fmt.Fprintf(w, "      %s %s\n", mark, c.Path)
 	}
 }
 
-func changeMark(t rsync.ChangeType) string {
-	switch t {
-	case rsync.Created:
-		return "+"
-	case rsync.Deleted:
-		return "-"
-	default:
-		return "M"
+func printPaths(w io.Writer, label string, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "    %s: %d\n", label, len(paths))
+	for _, p := range paths {
+		_, _ = fmt.Fprintf(w, "      - %s\n", p)
 	}
 }

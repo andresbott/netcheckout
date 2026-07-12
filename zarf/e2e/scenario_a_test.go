@@ -34,6 +34,18 @@ func TestScenarioA(t *testing.T) {
 		t.FailNow()
 	}
 
+	if !t.Run("checkin refuses a profile that is not checked out", func(t *testing.T) {
+		stdout, _, exitCode := runCLIEnv(t, configPath, env, "checkin", "e2e")
+		if exitCode == 0 {
+			t.Fatal("checkin of a not-checked-out profile should fail, got exit 0")
+		}
+		if !strings.Contains(stdout, "not checked out") {
+			t.Fatalf("checkin output = %q, want it to report the profile is not checked out", stdout)
+		}
+	}) {
+		t.FailNow()
+	}
+
 	if !t.Run("checkout copies remote to local and writes a marker", func(t *testing.T) {
 		_, _, exitCode := runCLIEnv(t, configPath, env, "checkout", "e2e")
 		if exitCode != 0 {
@@ -42,6 +54,18 @@ func TestScenarioA(t *testing.T) {
 		assertSnapshotsEqual(t, remoteSnapshot, snapshot(t, local))
 		if _, err := os.Stat(markerPath(remote)); err != nil {
 			t.Fatalf("expected checkout marker at %s: %v", markerPath(remote), err)
+		}
+	}) {
+		t.FailNow()
+	}
+
+	if !t.Run("checkout refuses a second checkout while held", func(t *testing.T) {
+		stdout, _, exitCode := runCLIEnv(t, configPath, env, "checkout", "e2e")
+		if exitCode == 0 {
+			t.Fatal("a second checkout of a held profile should fail, got exit 0")
+		}
+		if !strings.Contains(stdout, "already checked out") {
+			t.Fatalf("checkout output = %q, want it to report the profile is already checked out", stdout)
 		}
 	}) {
 		t.FailNow()

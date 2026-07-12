@@ -27,8 +27,17 @@ func (r *recordSyncer) Sync(_ context.Context, j rsync.Job) (rsync.Result, error
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(dst, f)), 0o755); err != nil {
 			return rsync.Result{}, err
 		}
+		// Classify like rsync's itemize would: a new destination file is a
+		// creation, an existing one an update.
+		ct := rsync.Created
+		if _, err := os.Stat(filepath.Join(dst, f)); err == nil {
+			ct = rsync.Modified
+		}
 		if err := os.WriteFile(filepath.Join(dst, f), data, 0o644); err != nil {
 			return rsync.Result{}, err
+		}
+		if j.OnChange != nil {
+			j.OnChange(rsync.Change{Path: f, Type: ct})
 		}
 	}
 	return rsync.Result{}, nil
@@ -39,7 +48,7 @@ func (r *recordSyncer) Diff(context.Context, rsync.Job) (rsync.Diff, error) {
 
 func TestApplyConflictWithoutForceWritesNothing(t *testing.T) {
 	s := &recordSyncer{}
-	_, err := Apply(context.Background(), s, t.TempDir(), t.TempDir(), Plan{Conflicts: []string{"c.txt"}}, false)
+	_, err := Apply(context.Background(), s, t.TempDir(), t.TempDir(), Plan{Conflicts: []string{"c.txt"}}, false, nil)
 	var ce *ConflictError
 	if err == nil {
 		t.Fatal("want ConflictError")
@@ -57,7 +66,7 @@ func TestApplyForceResolvesConflictAsPush(t *testing.T) {
 	remoteRoot := t.TempDir()
 	_ = os.WriteFile(filepath.Join(localRoot, "c.txt"), []byte("local"), 0o644)
 	s := &recordSyncer{}
-	applied, err := Apply(context.Background(), s, localRoot, remoteRoot, Plan{Conflicts: []string{"c.txt"}}, true)
+	applied, err := Apply(context.Background(), s, localRoot, remoteRoot, Plan{Conflicts: []string{"c.txt"}}, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +87,7 @@ func TestApplyPerformsDeletes(t *testing.T) {
 	applied, err := Apply(context.Background(), s, localRoot, remoteRoot, Plan{
 		RemoteDeletes: []string{"r.txt"},
 		LocalDeletes:  []string{"l.txt"},
-	}, false)
+	}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +99,42 @@ func TestApplyPerformsDeletes(t *testing.T) {
 	}
 	if len(applied.RemovedRemote) != 1 || len(applied.RemovedLocal) != 1 {
 		t.Errorf("applied = %+v", applied)
+	}
+}
+
+func TestApplyEmitsSidedEvents(t *testing.T) {
+	localRoot := t.TempDir()
+	remoteRoot := t.TempDir()
+	// A local add to push, a remote add to pull, and a delete on each side.
+	_ = os.WriteFile(filepath.Join(localRoot, "up.txt"), []byte("u"), 0o644)
+	_ = os.WriteFile(filepath.Join(remoteRoot, "down.txt"), []byte("d"), 0o644)
+	_ = os.WriteFile(filepath.Join(remoteRoot, "gone-r.txt"), []byte("r"), 0o644)
+	_ = os.WriteFile(filepath.Join(localRoot, "gone-l.txt"), []byte("l"), 0o644)
+
+	var got []Event
+	s := &recordSyncer{}
+	if _, err := Apply(context.Background(), s, localRoot, remoteRoot, Plan{
+		Push:          []string{"up.txt"},
+		Pull:          []string{"down.txt"},
+		RemoteDeletes: []string{"gone-r.txt"},
+		LocalDeletes:  []string{"gone-l.txt"},
+	}, false, func(e Event) { got = append(got, e) }); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []Event{
+		{Kind: EventAdd, Side: SideLocal, Path: "down.txt"}, // pull runs first
+		{Kind: EventAdd, Side: SideRemote, Path: "up.txt"},  // push next
+		{Kind: EventDelete, Side: SideRemote, Path: "gone-r.txt"},
+		{Kind: EventDelete, Side: SideLocal, Path: "gone-l.txt"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event count = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event[%d] = %+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
@@ -108,4 +153,27 @@ func as(err error, target **ConflictError) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+func TestPullEmitterMapsToLocalSide(t *testing.T) {
+	var got []Event
+	emit := PullEmitter(func(e Event) { got = append(got, e) })
+	emit(rsync.Change{Path: "new.txt", Type: rsync.Created})
+	emit(rsync.Change{Path: "upd.txt", Type: rsync.Modified})
+
+	want := []Event{
+		{Kind: EventAdd, Side: SideLocal, Path: "new.txt"},
+		{Kind: EventModify, Side: SideLocal, Path: "upd.txt"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d events, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if PullEmitter(nil) != nil {
+		t.Error("PullEmitter(nil) should return nil so no callback is installed")
+	}
 }

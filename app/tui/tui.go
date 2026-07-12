@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/andresbott/netcheckout/app/metainfo"
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
+	"github.com/andresbott/netcheckout/internal/localstat"
+	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
@@ -23,6 +26,7 @@ const (
 	modeMain mode = iota
 	modeForm
 	modeConfirm
+	modeSettings
 )
 
 // mainSub selects what modeMain's top box shows. Enter (subList) reveals the
@@ -37,7 +41,6 @@ const (
 type model struct {
 	path         string
 	cfg          *config.Config
-	differ       status.Differ
 	checks       map[string]*sanity.Result
 	version      string
 	identity     string
@@ -47,6 +50,7 @@ type model struct {
 	mode         mode
 	sub          mainSub
 	form         formModel
+	settings     settingsModel
 	profile      profileModel
 	confirmName  string
 	confirmKind  confirmKind
@@ -55,7 +59,7 @@ type model struct {
 	id           ident.Ident
 	runner       lifecycle.Runner
 	actForce     bool
-	actClean     bool
+	checkinClean bool // "delete local copy" checkbox in the check-in dialog
 }
 
 // Run loads the config at path and starts the interactive TUI.
@@ -64,7 +68,7 @@ func Run(path string) error {
 	if err != nil {
 		return err
 	}
-	p := tea.NewProgram(newModel(path, cfg), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(path, cfg).withStartupSettings(), tea.WithAltScreen())
 	_, err = p.Run()
 	return err
 }
@@ -78,12 +82,23 @@ func newModel(path string, cfg *config.Config) model {
 		identity: identityString(cfg),
 		mode:     modeMain,
 		list:     newList(nil),
-		differ:   rsync.New(),
 		checks:   make(map[string]*sanity.Result),
 		id:       id,
 		runner:   lifecycle.Runner{Syncer: rsync.New(), ToolVersion: metainfo.Version},
 	}
 	m.refreshList()
+	return m
+}
+
+// withStartupSettings opens the settings dialog when no identity is configured,
+// so the user is prompted to set one on start rather than silently defaulting to
+// $USER@$HOSTNAME. newModel itself always starts on the main view; this is a
+// separate step applied by Run so the initial mode stays predictable for tests.
+func (m model) withStartupSettings() model {
+	if m.cfg.Identity == "" {
+		m.settings = newSettings(m.cfg)
+		m.mode = modeSettings
+	}
 	return m
 }
 
@@ -114,12 +129,17 @@ func (m *model) resize(ws tea.WindowSizeMsg) {
 	if m.form.browsing {
 		m.form.picker.setHeight(m.form.pickerHeight())
 	}
+	m.settings.setWidth(ws.Width)
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, 0, len(m.cfg.Profiles))
+	cmds := make([]tea.Cmd, 0, len(m.cfg.Profiles)+1)
 	for name, p := range m.cfg.Profiles {
 		cmds = append(cmds, sanityCmd(name, p))
+	}
+	// When the settings dialog auto-opens (no identity configured), blink its cursor.
+	if m.mode == modeSettings {
+		cmds = append(cmds, textinput.Blink)
 	}
 	return tea.Batch(cmds...)
 }
@@ -136,21 +156,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyStatusResult(res)
 		return m, nil
 	}
+	if res, ok := msg.(localStatResultMsg); ok {
+		m.applyLocalStatResult(res)
+		return m, nil
+	}
 	if res, ok := msg.(sanityResultMsg); ok {
 		r := res.result
 		m.checks[res.name] = &r
+		// If this is the open profile, the refreshed state may have changed the
+		// visible action list's length (e.g. a completed checkout swaps
+		// [Checkout] for [Status, Sync, Check-in]), so keep the cursor in range.
+		if m.sub == subActions && m.profile.name == res.name {
+			m.profile.clampCursor(len(visibleActions(&r)))
+		}
 		return m, nil
+	}
+	if res, ok := msg.(syncEventMsg); ok {
+		m.applySyncEvent(res)
+		// Keep draining until the terminal actionResultMsg, regardless of whether
+		// this event was for the open profile (see waitForMsg).
+		return m, waitForMsg(res.ch)
 	}
 	if res, ok := msg.(actionResultMsg); ok {
 		m.applyActionResult(res)
+		p := m.cfg.Profiles[res.name]
 		// Refresh the sanity mark since the marker changed.
-		return m, sanityCmd(res.name, m.cfg.Profiles[res.name])
+		cmds := []tea.Cmd{sanityCmd(res.name, p)}
+		// A successful mutating action changed the local tree, so re-scan it to
+		// refresh the Contents summary in the Details box. Only while still on the
+		// profile view — a released check-in has returned to the list — and never
+		// for a dry run, which wrote nothing. The Activity panel keeps showing the
+		// applied result; only the Details Contents block is refreshed.
+		if res.err == nil && !res.report.DryRun && m.sub == subActions && m.profile.name == res.name {
+			m.profile.scanning = true
+			m.profile.statErr = nil
+			cmds = append(cmds, localStatCmd(res.name, p))
+		}
+		return m, tea.Batch(cmds...)
 	}
 	switch m.mode {
 	case modeForm:
 		return m.updateForm(msg)
 	case modeConfirm:
 		return m.updateConfirm(msg)
+	case modeSettings:
+		return m.updateSettings(msg)
 	default:
 		return m.updateMain(msg)
 	}
@@ -172,6 +222,8 @@ func (m model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.openProfile(name)
 		}
 		return m, nil
+	case "i":
+		return m.openSettings()
 	case "a":
 		return m.openForm("", config.Profile{})
 	case "e":
@@ -205,10 +257,89 @@ func (m model) openForm(origName string, p config.Profile) (tea.Model, tea.Cmd) 
 	return m, textinput.Blink
 }
 
+func (m model) openSettings() (tea.Model, tea.Cmd) {
+	m.settings = newSettings(m.cfg)
+	m.settings.setWidth(m.width)
+	m.mode = modeSettings
+	return m, textinput.Blink
+}
+
+// updateSettings handles the client-settings modal: focus movement
+// (tab/shift+tab/↑↓ across fields, ←→ on the action row), esc to cancel,
+// enter/space to activate, and typing into the focused input. Mirrors
+// updateForm's key handling.
+func (m model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		var cmd tea.Cmd
+		m.settings, cmd = m.settings.update(msg)
+		return m, cmd
+	}
+	switch key.String() {
+	case "esc":
+		m.mode = modeMain
+		return m, nil
+	case "tab", "down":
+		return m, m.settings.focusNext()
+	case "shift+tab", "up":
+		return m, m.settings.focusPrev()
+	case "left":
+		if m.settings.focus == m.settings.cancelSlot() {
+			return m, m.settings.setFocus(m.settings.saveSlot())
+		}
+	case "right":
+		if m.settings.focus == m.settings.saveSlot() {
+			return m, m.settings.setFocus(m.settings.cancelSlot())
+		}
+	case "enter":
+		if m.settings.focus == m.settings.cancelSlot() {
+			m.mode = modeMain
+			return m, nil
+		}
+		// On an input or on Save: submit.
+		return m.submitSettings()
+	case " ":
+		switch m.settings.focus {
+		case m.settings.saveSlot():
+			return m.submitSettings()
+		case m.settings.cancelSlot():
+			m.mode = modeMain
+			return m, nil
+		}
+		// On an input: fall through to type the space.
+	}
+	var cmd tea.Cmd
+	m.settings, cmd = m.settings.update(msg)
+	return m, cmd
+}
+
+// submitSettings writes the edited client settings to disk. On failure it
+// restores the previous values so in-memory state never diverges from disk and
+// keeps the modal open with an error. On success it refreshes the header
+// identity and re-resolves m.id so later checkouts record the new identity.
+func (m model) submitSettings() (tea.Model, tea.Cmd) {
+	prev := *m.cfg
+	m.settings.apply(m.cfg)
+	if err := config.Save(m.path, m.cfg); err != nil {
+		for _, f := range settingsFields {
+			f.set(m.cfg, f.get(&prev))
+		}
+		m.settings.err = "save failed: " + err.Error()
+		return m, nil
+	}
+	m.identity = identityString(m.cfg)
+	m.id, _ = ident.Resolve(m.cfg)
+	m.mode = modeMain
+	m.err = nil
+	return m, nil
+}
+
 func (m model) openProfile(name string) (tea.Model, tea.Cmd) {
 	m.profile = newProfileView(name)
 	m.sub = subActions
-	return m, nil
+	// Refresh the sanity mark so action-row gating reflects the current on-disk
+	// checkout state rather than whatever was cached at startup.
+	return m, sanityCmd(name, m.cfg.Profiles[name])
 }
 
 // statusResultMsg carries a background Status compute back into Update. name
@@ -222,9 +353,9 @@ type statusResultMsg struct {
 
 // statusCmd runs status.Compute off the UI thread and delivers the outcome as a
 // statusResultMsg.
-func statusCmd(d status.Differ, name string, p config.Profile) tea.Cmd {
+func statusCmd(name string, p config.Profile) tea.Cmd {
 	return func() tea.Msg {
-		st, err := status.Compute(context.Background(), d, p)
+		st, err := status.Compute(name, p)
 		return statusResultMsg{name: name, st: st, err: err}
 	}
 }
@@ -245,6 +376,41 @@ func (m *model) applyStatusResult(res statusResultMsg) {
 	m.profile.err = nil
 	st := res.st
 	m.profile.result = &st
+}
+
+// localStatResultMsg carries a background local file-stat scan back into Update,
+// guarded by profile name so a stale result from a since-left profile is ignored.
+type localStatResultMsg struct {
+	name  string
+	stats localstat.Stats
+	err   error
+}
+
+// localStatCmd runs localstat.Scan off the UI thread and delivers the outcome as
+// a localStatResultMsg. It runs alongside statusCmd on the Status action.
+func localStatCmd(name string, p config.Profile) tea.Cmd {
+	return func() tea.Msg {
+		stats, err := localstat.Scan(p)
+		return localStatResultMsg{name: name, stats: stats, err: err}
+	}
+}
+
+// applyLocalStatResult stores a local scan's outcome on the open profile,
+// ignored unless the actions view is still showing that same profile so a slow
+// scan can never overwrite newer state.
+func (m *model) applyLocalStatResult(res localStatResultMsg) {
+	if m.sub != subActions || m.profile.name != res.name {
+		return
+	}
+	m.profile.scanning = false
+	if res.err != nil {
+		m.profile.statErr = res.err
+		m.profile.fileStats = nil
+		return
+	}
+	m.profile.statErr = nil
+	stats := res.stats
+	m.profile.fileStats = &stats
 }
 
 // sanityResultMsg carries one profile's lightweight sanity check back into Update.
@@ -268,31 +434,61 @@ type actionResultMsg struct {
 	err    error
 }
 
-// checkoutCmd runs lifecycle.Runner.Checkout off the UI thread and delivers the
-// outcome as an actionResultMsg.
+// syncEventMsg carries one live applied change from a streaming action
+// (Checkout, Sync, or Check-in) back into Update. ch is the same channel the
+// action streams on, so Update can re-arm waitForMsg to drain the next message.
+type syncEventMsg struct {
+	name  string
+	event reconcile.Event
+	ch    chan tea.Msg
+}
+
+// waitForMsg blocks on the streaming channel and returns the next message. It is
+// re-issued after every syncEventMsg so the channel is drained to completion
+// (through the terminal actionResultMsg), even if the user has navigated away —
+// which keeps the producing goroutine from blocking forever on a full send.
+func waitForMsg(ch chan tea.Msg) tea.Cmd {
+	return func() tea.Msg { return <-ch }
+}
+
+// checkoutCmd runs lifecycle.Runner.Checkout off the UI thread, streaming each
+// pulled file live as a syncEventMsg and finishing with an actionResultMsg —
+// the same shape as syncCmd/checkinCmd.
 func checkoutCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
-	return func() tea.Msg {
-		rep, err := r.Checkout(context.Background(), name, p, id, "", opts)
-		return actionResultMsg{name: name, report: rep, err: err}
-	}
+	return streamCmd(name, func(o lifecycle.Options) (lifecycle.Report, error) {
+		return r.Checkout(context.Background(), name, p, id, "", o)
+	}, opts)
 }
 
-// syncCmd runs lifecycle.Runner.Sync off the UI thread and delivers the
-// outcome as an actionResultMsg.
+// streamCmd runs a streaming action (Checkout, Sync, or Check-in) on a
+// background goroutine, streaming each applied change as a syncEventMsg on a
+// channel and finishing with a terminal actionResultMsg. It returns the
+// command that drains the first message; Update re-arms waitForMsg for the rest.
+func streamCmd(name string, run func(opts lifecycle.Options) (lifecycle.Report, error), opts lifecycle.Options) tea.Cmd {
+	ch := make(chan tea.Msg)
+	opts.OnApply = func(e reconcile.Event) { ch <- syncEventMsg{name: name, event: e, ch: ch} }
+	go func() {
+		rep, err := run(opts)
+		ch <- actionResultMsg{name: name, report: rep, err: err}
+		close(ch)
+	}()
+	return waitForMsg(ch)
+}
+
+// syncCmd runs lifecycle.Runner.Sync off the UI thread, streaming applied changes
+// live and finishing with an actionResultMsg.
 func syncCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
-	return func() tea.Msg {
-		rep, err := r.Sync(context.Background(), name, p, id, "", opts)
-		return actionResultMsg{name: name, report: rep, err: err}
-	}
+	return streamCmd(name, func(o lifecycle.Options) (lifecycle.Report, error) {
+		return r.Sync(context.Background(), name, p, id, "", o)
+	}, opts)
 }
 
-// checkinCmd runs lifecycle.Runner.Checkin off the UI thread and delivers the
-// outcome as an actionResultMsg.
+// checkinCmd runs lifecycle.Runner.Checkin off the UI thread, streaming applied
+// changes live and finishing with an actionResultMsg.
 func checkinCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
-	return func() tea.Msg {
-		rep, err := r.Checkin(context.Background(), name, p, id, opts)
-		return actionResultMsg{name: name, report: rep, err: err}
-	}
+	return streamCmd(name, func(o lifecycle.Options) (lifecycle.Report, error) {
+		return r.Checkin(context.Background(), name, p, id, o)
+	}, opts)
 }
 
 // applyActionResult stores a mutating action's outcome on the open profile. A
@@ -302,6 +498,18 @@ func checkinCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profil
 // paths in report.Conflicts, which renderStatus needs to show them instead of
 // just a count-only error string. actionErr is still set so non-conflict
 // failures (e.g. the remote root not being mounted) render as an error.
+// applySyncEvent appends one live applied change to the open profile's list and
+// auto-follows the scroll to the bottom so the newest row stays visible. A stale
+// event from a since-left profile is ignored (the channel is still drained by the
+// re-armed waitForMsg).
+func (m *model) applySyncEvent(res syncEventMsg) {
+	if m.sub != subActions || m.profile.name != res.name {
+		return
+	}
+	m.profile.applied = append(m.profile.applied, res.event)
+	m.profile.statusScroll = m.statusMaxScroll()
+}
+
 func (m *model) applyActionResult(res actionResultMsg) {
 	if m.sub != subActions || m.profile.name != res.name {
 		return
@@ -310,6 +518,12 @@ func (m *model) applyActionResult(res actionResultMsg) {
 	rep := res.report
 	m.profile.actionReport = &rep
 	m.profile.actionErr = res.err
+	// A completed check-in releases the profile, so its actions no longer apply.
+	// Return to the profile list rather than lingering on that action view. On
+	// error (e.g. a conflict stop) stay put so the failure stays on screen.
+	if res.err == nil && rep.Action == "checkin" {
+		m.sub = subList
+	}
 }
 
 func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -317,6 +531,7 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	actions := visibleActions(m.checks[m.profile.name])
 	switch key.String() {
 	case "esc":
 		m.sub = subList
@@ -325,37 +540,67 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profile.moveUp()
 		return m, nil
 	case "down", "s":
-		m.profile.moveDown()
+		m.profile.moveDown(len(actions))
 		return m, nil
 	case "f":
 		m.actForce = !m.actForce
 		return m, nil
-	case "c":
-		m.actClean = !m.actClean
+	case "pgup":
+		_, ih := m.activityGeometry()
+		m.profile.statusScroll -= step(ih)
+		if m.profile.statusScroll < 0 {
+			m.profile.statusScroll = 0
+		}
+		return m, nil
+	case "pgdown":
+		_, ih := m.activityGeometry()
+		m.profile.statusScroll += step(ih)
+		if max := m.statusMaxScroll(); m.profile.statusScroll > max {
+			m.profile.statusScroll = max
+		}
 		return m, nil
 	case "enter":
-		switch profileActions[m.profile.cursor] {
+		if m.profile.cursor >= len(actions) {
+			return m, nil
+		}
+		switch actions[m.profile.cursor] {
 		case "Status":
 			m.profile.checking = true
 			m.profile.err = nil
 			m.profile.result = nil
-			return m, statusCmd(m.differ, m.profile.name, m.cfg.Profiles[m.profile.name])
-		case "Checkout":
-			m.profile.acting = true
-			m.profile.actionErr = nil
+			m.profile.statusScroll = 0
+			// Drop any prior action report ("sync: N pulled") so the fresh
+			// Status result isn't masked by it in renderStatus.
 			m.profile.actionReport = nil
-			opts := lifecycle.Options{Force: m.actForce, Clean: m.actClean}
-			return m, checkoutCmd(m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], opts)
+			m.profile.actionErr = nil
+			m.profile.scanning = true
+			m.profile.statErr = nil
+			m.profile.fileStats = nil
+			p := m.cfg.Profiles[m.profile.name]
+			return m, tea.Batch(
+				statusCmd(m.profile.name, p),
+				localStatCmd(m.profile.name, p),
+			)
+		case "Checkout":
+			m.confirmName = m.profile.name
+			m.confirmKind = confirmCheckout
+			m.confirmFocus = confirmFocusCancel // safe default: reaching "Check out" needs a move
+			m.mode = modeConfirm
 		case "Sync":
 			m.profile.acting = true
 			m.profile.actionErr = nil
 			m.profile.actionReport = nil
-			opts := lifecycle.Options{Force: m.actForce, Clean: m.actClean}
+			m.profile.applied = nil
+			m.profile.statusScroll = 0
+			opts := lifecycle.Options{Force: m.actForce}
 			return m, syncCmd(m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], opts)
 		case "Check-in":
 			m.confirmName = m.profile.name
 			m.confirmKind = confirmCheckin
-			m.confirmFocus = confirmFocusCancel
+			// Open focused on the checkbox: a bare enter/space just toggles it
+			// (harmless), so reaching the actual check-in still needs a move.
+			m.confirmFocus = confirmFocusClean
+			m.checkinClean = false // default the checkbox to unchecked (safe) each open
 			m.mode = modeConfirm
 		}
 		return m, nil
@@ -475,7 +720,9 @@ func (m model) View() string {
 	case modeForm:
 		return m.overlayModal(m.form.View())
 	case modeConfirm:
-		return m.overlayModal(confirmModal(m.confirmKind, m.confirmName, m.confirmFocus, m.width))
+		return m.overlayModal(confirmModal(m.confirmKind, m.confirmName, m.confirmFocus, m.checkinClean, m.width))
+	case modeSettings:
+		return m.overlayModal(m.settings.View())
 	default:
 		return m.mainView(false)
 	}
@@ -501,13 +748,18 @@ func (m model) mainView(dim bool) string {
 	}
 	rightW := w - leftW
 
-	detailsH := bodyH / 2
-	topH := bodyH - detailsH
+	// The top box (Profiles/Actions) takes a third of the body height; Details
+	// gets the remaining two thirds so its roots/checkout/subpaths/contents fit.
+	topH := bodyH / 3
+	if topH < 3 {
+		topH = 3
+	}
+	detailsH := bodyH - topH
 
 	var topTitle, topBody, name string
 	if m.sub == subActions {
 		topTitle = "Actions"
-		topBody = renderActions(m.profile.cursor, leftW-2)
+		topBody = renderActions(m.profile.cursor, leftW-2, m.checks[m.profile.name])
 		name = m.profile.name
 	} else {
 		topTitle = "Profiles"
@@ -515,20 +767,25 @@ func (m model) mainView(dim bool) string {
 		name, _ = m.list.selected()
 	}
 	detailsBody := renderDetails(name, m.cfg.Profiles[name], m.checks[name], leftW-2)
+	if m.sub == subActions {
+		detailsBody += contentsBlock(m.profile.fileStats, m.profile.scanning, m.profile.statErr)
+	}
 
 	top := titledBox(topTitle, topBody, leftW, topH, !dim)
 	details := titledBox("Details", detailsBody, leftW, detailsH, false)
 	left := lipgloss.JoinVertical(lipgloss.Left, top, details)
 	activity := renderActivity()
+	overflow := false
 	if m.sub == subActions {
-		activity = renderStatus(m.profile)
+		activity = renderStatus(m.profile, rightW-2)
+		activity, overflow = scrollWindow(activity, m.profile.statusScroll, bodyH-2)
 	}
 	right := titledBox("Activity", activity, rightW, bodyH, false)
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	footer := renderFooter(w)
 	if m.sub == subActions {
-		footer = renderProfileFooter(w, m.actForce, m.actClean)
+		footer = renderProfileFooter(w, m.actForce, overflow)
 	}
 	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + footer
 	if m.err != nil {
@@ -541,4 +798,66 @@ func (m model) mainView(dim bool) string {
 // composites box centered over it, so the modal reads as a floating window.
 func (m model) overlayModal(box string) string {
 	return placeCenter(m.mainView(true), box)
+}
+
+// scrollWindow returns the height visible lines of body starting at offset, and
+// whether body is taller than height (i.e. scrolling applies). offset is clamped
+// so the window never runs off the end; a body that already fits is returned
+// whole with overflow=false.
+func scrollWindow(body string, offset, height int) (string, bool) {
+	if height < 1 {
+		height = 1
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= height {
+		return body, false
+	}
+	max := len(lines) - height
+	if offset > max {
+		offset = max
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return strings.Join(lines[offset:offset+height], "\n"), true
+}
+
+// activityGeometry returns the Activity box's inner width and height, mirroring
+// mainView's layout math so scroll clamping in updateProfile stays in sync with
+// what is actually rendered.
+func (m model) activityGeometry() (innerWidth, innerHeight int) {
+	w, h := m.width, m.height
+	if w == 0 {
+		w, h = 80, 24
+	}
+	bodyH := h - 2
+	if bodyH < 3 {
+		bodyH = 3
+	}
+	leftW := w / 3
+	if leftW < 16 {
+		leftW = 16
+	}
+	rightW := w - leftW
+	return rightW - 2, bodyH - 2
+}
+
+// step is a page scroll increment: the visible height, but at least one line so
+// a tiny pane still scrolls.
+func step(height int) int {
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
+// statusMaxScroll is the largest valid statusScroll for the current Activity
+// body: the rendered line count minus the visible height, floored at zero.
+func (m model) statusMaxScroll() int {
+	iw, ih := m.activityGeometry()
+	lines := strings.Count(renderStatus(m.profile, iw), "\n") + 1
+	if max := lines - ih; max > 0 {
+		return max
+	}
+	return 0
 }

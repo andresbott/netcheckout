@@ -46,3 +46,27 @@ func TestParseItemizePushUsesLeftAngle(t *testing.T) {
 		t.Errorf("Changes = %#v, want %#v", got.Changes, want)
 	}
 }
+
+func TestItemizeWriterStreamsChanges(t *testing.T) {
+	var got []Change
+	w := &itemizeWriter{onChange: func(c Change) { got = append(got, c) }}
+	// Feed the itemize output in chunks, splitting one line across two Writes to
+	// prove partial input is buffered until its newline arrives.
+	chunks := []string{
+		"sending incremental file list\n>f+++++++++ new.txt\n>f.st",
+		"...... changed.txt\n*deleting   gone.txt\n",
+	}
+	for _, c := range chunks {
+		if _, err := w.Write([]byte(c)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []Change{
+		{Path: "new.txt", Type: Created},
+		{Path: "changed.txt", Type: Modified},
+		{Path: "gone.txt", Type: Deleted},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("streamed changes = %#v, want %#v", got, want)
+	}
+}

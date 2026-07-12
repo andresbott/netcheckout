@@ -11,6 +11,7 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/marker"
+	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/rsync"
 )
 
@@ -30,8 +31,15 @@ func (lcSyncer) Sync(_ context.Context, j rsync.Job) (rsync.Result, error) {
 			return rsync.Result{}, err
 		}
 		_ = os.MkdirAll(filepath.Dir(filepath.Join(dst, f)), 0o755)
+		ct := rsync.Created
+		if _, err := os.Stat(filepath.Join(dst, f)); err == nil {
+			ct = rsync.Modified
+		}
 		if err := os.WriteFile(filepath.Join(dst, f), data, 0o644); err != nil {
 			return rsync.Result{}, err
+		}
+		if j.OnChange != nil {
+			j.OnChange(rsync.Change{Path: f, Type: ct})
 		}
 	}
 	return rsync.Result{}, nil
@@ -86,6 +94,43 @@ func TestSyncPushesLocalEdit(t *testing.T) {
 	}
 	if len(rep.Pushed) != 1 {
 		t.Errorf("rep.Pushed = %v", rep.Pushed)
+	}
+}
+
+func TestSyncForwardsApplyEvents(t *testing.T) {
+	name, p, id := heldFixture(t)
+	local := config.ExpandRoot(p.LocalRoot)
+	_ = os.WriteFile(filepath.Join(local, "keep.txt"), []byte("EDITED"), 0o644)
+	r := Runner{Syncer: lcSyncer{}, ToolVersion: "test"}
+
+	var events []reconcile.Event
+	_, err := r.Sync(context.Background(), name, p, id, "", Options{
+		OnApply: func(e reconcile.Event) { events = append(events, e) },
+	})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	want := reconcile.Event{Kind: reconcile.EventModify, Side: reconcile.SideRemote, Path: "keep.txt"}
+	if len(events) != 1 || events[0] != want {
+		t.Fatalf("events = %+v, want [%+v]", events, want)
+	}
+}
+
+func TestSyncDryRunEmitsNoEvents(t *testing.T) {
+	name, p, id := heldFixture(t)
+	local := config.ExpandRoot(p.LocalRoot)
+	_ = os.WriteFile(filepath.Join(local, "keep.txt"), []byte("EDITED"), 0o644)
+	r := Runner{Syncer: lcSyncer{}, ToolVersion: "test"}
+
+	var events []reconcile.Event
+	if _, err := r.Sync(context.Background(), name, p, id, "", Options{
+		DryRun:  true,
+		OnApply: func(e reconcile.Event) { events = append(events, e) },
+	}); err != nil {
+		t.Fatalf("dry-run sync: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("dry run must apply nothing, got events %+v", events)
 	}
 }
 

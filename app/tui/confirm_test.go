@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/sanity"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -149,7 +150,7 @@ func TestDeleteFocusTabCycles(t *testing.T) {
 // TestConfirmModalHasDeleteCancelButtons guards the new button UI: the modal
 // must render both bracketed buttons and the shared hint line.
 func TestConfirmModalHasDeleteCancelButtons(t *testing.T) {
-	view := confirmModal(confirmDelete, "alpha", confirmFocusCancel, 80)
+	view := confirmModal(confirmDelete, "alpha", confirmFocusCancel, false, 80)
 	for _, want := range []string{"[ Delete ]", "[ Cancel ]", "Move", "Activate", "Cancel"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("confirm modal missing %q:\n%s", want, view)
@@ -194,5 +195,155 @@ func TestConfirmModalFitsWidthWithLongName(t *testing.T) {
 	}
 	if got := lipgloss.Width(m.View()); got > 40 {
 		t.Errorf("confirm view width %d > 40; long name should be capped", got)
+	}
+}
+
+// TestCheckinModalShowsCleanCheckbox: the check-in dialog renders the "delete
+// local copy" checkbox, empty when clean is false and filled when true.
+func TestCheckinModalShowsCleanCheckbox(t *testing.T) {
+	unchecked := confirmModal(confirmCheckin, "work", confirmFocusCancel, false, 80)
+	if !strings.Contains(unchecked, "delete local copy") || !strings.Contains(unchecked, "[ ]") {
+		t.Errorf("check-in modal should show an unchecked 'delete local copy' box:\n%s", unchecked)
+	}
+	checked := confirmModal(confirmCheckin, "work", confirmFocusClean, true, 80)
+	if !strings.Contains(checked, "[x]") {
+		t.Errorf("clean=true should render a checked box:\n%s", checked)
+	}
+}
+
+// TestDeleteModalHasNoCleanCheckbox: the checkbox is check-in only; the delete
+// dialog must never show it.
+func TestDeleteModalHasNoCleanCheckbox(t *testing.T) {
+	view := confirmModal(confirmDelete, "alpha", confirmFocusCancel, false, 80)
+	if strings.Contains(view, "delete local copy") {
+		t.Errorf("delete modal must not show the clean checkbox:\n%s", view)
+	}
+}
+
+// TestCheckinFocusRingIncludesCheckbox: Tab cycles checkbox → Check in → Cancel
+// → checkbox in the check-in dialog (the checkbox is absent from delete).
+func TestCheckinFocusRingIncludesCheckbox(t *testing.T) {
+	m := model{mode: modeConfirm, confirmKind: confirmCheckin, confirmFocus: confirmFocusCancel}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.confirmFocus != confirmFocusClean {
+		t.Fatalf("tab from Cancel should reach the checkbox, got %d", m.confirmFocus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.confirmFocus != confirmFocusDelete {
+		t.Fatalf("tab from checkbox should reach Check in, got %d", m.confirmFocus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.confirmFocus != confirmFocusCancel {
+		t.Fatalf("tab from Check in should reach Cancel, got %d", m.confirmFocus)
+	}
+}
+
+// TestCheckinCheckboxTogglesClean: space/enter on the focused checkbox flips the
+// checkinClean state without activating the check-in.
+func TestCheckinCheckboxTogglesClean(t *testing.T) {
+	m := model{mode: modeConfirm, confirmKind: confirmCheckin, confirmFocus: confirmFocusClean}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeySpace})
+	if !m.checkinClean {
+		t.Error("space on the focused checkbox should toggle checkinClean on")
+	}
+	if m.mode != modeConfirm {
+		t.Error("toggling the checkbox must not close the dialog")
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.checkinClean {
+		t.Error("enter on the focused checkbox should toggle it back off")
+	}
+}
+
+// TestCheckinUpDownMovesBetweenRows: up/down move focus between the checkbox row
+// and the button row in the check-in dialog.
+func TestCheckinUpDownMovesBetweenRows(t *testing.T) {
+	m := model{mode: modeConfirm, confirmKind: confirmCheckin, confirmFocus: confirmFocusClean}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.confirmFocus != confirmFocusDelete {
+		t.Fatalf("down from the checkbox should move to the buttons, got %d", m.confirmFocus)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.confirmFocus != confirmFocusClean {
+		t.Fatalf("up from a button should move to the checkbox, got %d", m.confirmFocus)
+	}
+	// From Cancel too, up returns to the checkbox.
+	m.confirmFocus = confirmFocusCancel
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.confirmFocus != confirmFocusClean {
+		t.Fatalf("up from Cancel should move to the checkbox, got %d", m.confirmFocus)
+	}
+}
+
+// TestDeleteUpDownNoop: the delete dialog has no checkbox, so up/down do nothing.
+func TestDeleteUpDownNoop(t *testing.T) {
+	m := model{mode: modeConfirm, confirmKind: confirmDelete, confirmFocus: confirmFocusCancel}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.confirmFocus != confirmFocusCancel {
+		t.Errorf("up/down should be a no-op in the delete dialog, got %d", m.confirmFocus)
+	}
+}
+
+// TestCheckoutOpensConfirmModal: selecting Checkout no longer runs immediately —
+// it opens the confirm modal, focused on Cancel (the safe default), without
+// starting the action.
+func TestCheckoutOpensConfirmModal(t *testing.T) {
+	m := model{
+		sub:    subActions,
+		cfg:    &config.Config{Profiles: map[string]config.Profile{"work": {}}},
+		checks: map[string]*sanity.Result{"work": {CheckedOut: false}},
+	}
+	m.profile = newProfileView("work")
+	m.profile.cursor = actionIndex(visibleActions(m.checks["work"]), "Checkout")
+	m2, _ := m.updateProfile(keyMsg("enter"))
+	got := m2.(model)
+	if got.mode != modeConfirm {
+		t.Fatal("Checkout Enter should open the confirm modal")
+	}
+	if got.confirmKind != confirmCheckout {
+		t.Errorf("confirmKind = %v, want confirmCheckout", got.confirmKind)
+	}
+	if got.confirmFocus != confirmFocusCancel {
+		t.Errorf("checkout dialog should open focused on Cancel, got %d", got.confirmFocus)
+	}
+	if got.profile.acting {
+		t.Error("opening the confirm dialog must not start the checkout")
+	}
+}
+
+// TestCheckoutConfirmedStartsAction: activating the checkout dialog (y) closes it
+// and starts the action (acting set), returning to the actions view.
+func TestCheckoutConfirmedStartsAction(t *testing.T) {
+	m := model{
+		mode:        modeConfirm,
+		confirmKind: confirmCheckout,
+		confirmName: "work",
+		cfg:         &config.Config{Profiles: map[string]config.Profile{"work": {}}},
+	}
+	m.profile = newProfileView("work")
+	m2, cmd := m.activateConfirm()
+	got := m2.(model)
+	if got.mode != modeMain || got.sub != subActions {
+		t.Fatalf("after confirming checkout want modeMain/subActions, got mode=%d sub=%d", got.mode, got.sub)
+	}
+	if !got.profile.acting {
+		t.Error("confirming checkout should mark the profile as acting")
+	}
+	if cmd == nil {
+		t.Error("confirming checkout should dispatch the checkout command")
+	}
+}
+
+// TestCheckoutModalWording: the checkout dialog carries its own title/question/
+// activate label and, like delete, shows no clean checkbox.
+func TestCheckoutModalWording(t *testing.T) {
+	view := confirmModal(confirmCheckout, "work", confirmFocusCancel, false, 80)
+	for _, want := range []string{"Confirm checkout", "Check out \"work\"?", "[ Check out ]", "[ Cancel ]"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("checkout modal missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "delete local copy") {
+		t.Errorf("checkout modal must not show the clean checkbox:\n%s", view)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
+	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/spf13/cobra"
 )
@@ -51,7 +52,12 @@ func newSyncCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command {
 			if len(args) == 2 {
 				rel = args[1]
 			}
-			rep, err := runner.Sync(context.Background(), name, p, id, rel, lifecycle.Options{Force: force, DryRun: dryRun})
+			opts := lifecycle.Options{Force: force, DryRun: dryRun}
+			if !dryRun {
+				out := cmd.OutOrStdout()
+				opts.OnApply = func(e reconcile.Event) { printApplyEvent(out, e) }
+			}
+			rep, err := runner.Sync(context.Background(), name, p, id, rel, opts)
 			if err != nil {
 				printReconcileReport(cmd.OutOrStdout(), name, rep) // show conflicts before the non-zero exit
 				return err
@@ -64,6 +70,23 @@ func newSyncCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the reconcile plan without changing anything")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream rsync output")
 	return cmd
+}
+
+// printApplyEvent renders one applied change live, in the same "verb → side
+// path" shape as the status view, as sync/checkin carry the reconcile out.
+func printApplyEvent(w io.Writer, e reconcile.Event) {
+	verb := "modify"
+	switch e.Kind {
+	case reconcile.EventAdd:
+		verb = "add"
+	case reconcile.EventDelete:
+		verb = "delete"
+	}
+	side := "local"
+	if e.Side == reconcile.SideRemote {
+		side = "remote"
+	}
+	_, _ = fmt.Fprintf(w, "  %-8s → %-6s  %s\n", verb, side, e.Path)
 }
 
 // printReconcileReport is shared by sync and checkin.

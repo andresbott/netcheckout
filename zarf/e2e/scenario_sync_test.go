@@ -5,6 +5,7 @@ package e2e
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +58,82 @@ func TestSyncDisambiguatesDeleteVsAdd(t *testing.T) {
 	// (b) the remote add was pulled: present locally.
 	if _, err := os.Stat(filepath.Join(local, "brand-new.dat")); err != nil {
 		t.Errorf("remote add should be pulled locally: %v", err)
+	}
+}
+
+func TestSyncMirrorsRemoteDeleteLocally(t *testing.T) {
+	requireRsync(t)
+	local, remote := newFixture(t)
+	writeRandomFile(t, filepath.Join(remote, "seed.dat"))
+	cfg := writeConfig(t, "e2e@localhost", "e2e", local, remote)
+	state := t.TempDir()
+	env := []string{"NETCHECKOUT_STATE=" + state}
+
+	// checkout -> sync establishes a clean baseline with seed.dat on both sides.
+	if _, _, code := runCLIEnv(t, cfg, env, "checkout", "e2e"); code != 0 {
+		t.Fatalf("checkout exit %d", code)
+	}
+	if _, _, code := runCLIEnv(t, cfg, env, "sync", "e2e"); code != 0 {
+		t.Fatalf("first sync exit %d", code)
+	}
+
+	// Delete the file on the remote only. Three-way sync must mirror that delete
+	// locally, NOT resurrect the file by pushing the local copy back to remote.
+	if err := os.Remove(filepath.Join(remote, "seed.dat")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, code := runCLIEnv(t, cfg, env, "sync", "e2e"); code != 0 {
+		t.Fatalf("second sync exit %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "seed.dat")); !os.IsNotExist(err) {
+		t.Error("remote delete must not be resurrected by a push (file must stay gone on remote)")
+	}
+	if _, err := os.Stat(filepath.Join(local, "seed.dat")); !os.IsNotExist(err) {
+		t.Error("remote delete must be mirrored locally (local file must be removed)")
+	}
+}
+
+// TestStatusPreviewsRemoteDeleteAsLocalDelete pins status/sync parity: after a
+// clean baseline, a file deleted on the remote only must be previewed by `status`
+// as the local deletion that `sync` will actually perform (mirror the remote
+// delete), NOT as a push that would resurrect the file on the remote. status must
+// be a true three-way dry-run of sync, not a raw two-way rsync diff.
+func TestStatusPreviewsRemoteDeleteAsLocalDelete(t *testing.T) {
+	requireRsync(t)
+	local, remote := newFixture(t)
+	writeRandomFile(t, filepath.Join(remote, "seed.dat"))
+	cfg := writeConfig(t, "e2e@localhost", "e2e", local, remote)
+	state := t.TempDir()
+	env := []string{"NETCHECKOUT_STATE=" + state}
+
+	if _, _, code := runCLIEnv(t, cfg, env, "checkout", "e2e"); code != 0 {
+		t.Fatalf("checkout exit %d", code)
+	}
+	if _, _, code := runCLIEnv(t, cfg, env, "sync", "e2e"); code != 0 {
+		t.Fatalf("first sync exit %d", code)
+	}
+	// Delete the file on the remote only.
+	if err := os.Remove(filepath.Join(remote, "seed.dat")); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, _, code := runCLIEnv(t, cfg, env, "status", "e2e")
+	if code != 0 {
+		t.Fatalf("status exit %d: %s", code, stdout)
+	}
+	if !strings.Contains(stdout, "del-local") {
+		t.Errorf("status must preview the remote delete as a local deletion (del-local); got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "seed.dat") {
+		t.Errorf("status must mention the affected path seed.dat; got:\n%s", stdout)
+	}
+	// The file must never be presented as a push (local -> remote add): that is
+	// the exact misclassification this guards against.
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.Contains(line, "seed.dat") && strings.Contains(line, "remote") && strings.Contains(line, "add") {
+			t.Errorf("status must not present the remote-deleted file as an add-to-remote push; got line: %q", line)
+		}
 	}
 }
 

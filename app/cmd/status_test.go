@@ -2,30 +2,14 @@ package cmd
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/andresbott/netcheckout/internal/baseline"
 	"github.com/andresbott/netcheckout/internal/config"
-	"github.com/andresbott/netcheckout/internal/rsync"
 )
-
-// fakeDiffer returns a canned Diff per direction, or a fixed error for every
-// call if err is set.
-type fakeDiffer struct {
-	diffs map[rsync.Direction]rsync.Diff
-	err   error
-}
-
-func (f fakeDiffer) Diff(_ context.Context, j rsync.Job) (rsync.Diff, error) {
-	if f.err != nil {
-		return rsync.Diff{}, f.err
-	}
-	return f.diffs[j.Direction], nil
-}
 
 func writeStatusTestConfig(t *testing.T, profiles map[string]config.Profile) string {
 	t.Helper()
@@ -36,9 +20,47 @@ func writeStatusTestConfig(t *testing.T, profiles map[string]config.Profile) str
 	return p
 }
 
+// statusFixture creates local/ and remote/ roots and points NETCHECKOUT_STATE at
+// a temp state dir so status.Compute resolves the baseline there.
+func statusFixture(t *testing.T) (local, remote string) {
+	t.Helper()
+	root := t.TempDir()
+	local = filepath.Join(root, "local")
+	remote = filepath.Join(root, "remote")
+	for _, d := range []string{local, remote} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
+	return local, remote
+}
+
+func saveBaseline(t *testing.T, name, local string) {
+	t.Helper()
+	files, err := baseline.Snapshot(local, []string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := baseline.Save(&baseline.Baseline{Profile: name, Relpaths: []string{"."}, Files: files}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runStatus(t *testing.T, cfgPath, profile string) (string, error) {
+	t.Helper()
+	cmd := newStatusCmd(&cfgPath)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{profile})
+	err := cmd.Execute()
+	return buf.String(), err
+}
+
 func TestStatusCommandMissingArg(t *testing.T) {
 	cfgPath := ""
-	cmd := newStatusCmdWithDiffer(&cfgPath, fakeDiffer{})
+	cmd := newStatusCmd(&cfgPath)
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
@@ -52,75 +74,85 @@ func TestStatusCommandUnknownProfile(t *testing.T) {
 	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
 		"work": {LocalRoot: t.TempDir(), RemoteRoot: t.TempDir()},
 	})
-	cmd := newStatusCmdWithDiffer(&cfgPath, fakeDiffer{})
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"missing-profile"})
-	err := cmd.Execute()
+	_, err := runStatus(t, cfgPath, "missing-profile")
 	if err == nil || !strings.Contains(err.Error(), `"missing-profile" not found`) {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestStatusCommandPrintsInSync(t *testing.T) {
-	remoteRoot := t.TempDir()
-	localRoot := t.TempDir()
-	writeCheckoutMarker(t, remoteRoot)
+	local, remote := statusFixture(t)
+	writeCheckoutMarker(t, remote)
+	saveBaseline(t, "work", local) // empty baseline, empty trees: in sync
 	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
-		"work": {LocalRoot: localRoot, RemoteRoot: remoteRoot},
+		"work": {LocalRoot: local, RemoteRoot: remote},
 	})
-	d := fakeDiffer{diffs: map[rsync.Direction]rsync.Diff{
-		rsync.Pull: {InSync: true},
-		rsync.Push: {InSync: true},
-	}}
-	cmd := newStatusCmdWithDiffer(&cfgPath, d)
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"work"})
-	if err := cmd.Execute(); err != nil {
+	out, err := runStatus(t, cfgPath, "work")
+	if err != nil {
 		t.Fatal(err)
 	}
-	out := buf.String()
 	if !strings.Contains(out, "work") || !strings.Contains(out, "in sync") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
 
-func TestStatusCommandPrintsDifferences(t *testing.T) {
-	remoteRoot := t.TempDir()
-	localRoot := t.TempDir()
-	writeCheckoutMarker(t, remoteRoot)
-	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
-		"work": {LocalRoot: localRoot, RemoteRoot: remoteRoot},
-	})
-	d := fakeDiffer{diffs: map[rsync.Direction]rsync.Diff{
-		rsync.Pull: {InSync: true},
-		rsync.Push: {Changes: []rsync.Change{{Path: "report.pdf", Type: rsync.Created}}},
-	}}
-	cmd := newStatusCmdWithDiffer(&cfgPath, d)
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"work"})
-	if err := cmd.Execute(); err != nil {
+func TestStatusCommandPrintsPushDifference(t *testing.T) {
+	local, remote := statusFixture(t)
+	writeCheckoutMarker(t, remote)
+	saveBaseline(t, "work", local) // empty baseline
+	// A brand-new local file is a push (add).
+	if err := os.WriteFile(filepath.Join(local, "report.pdf"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out := buf.String()
-	if !strings.Contains(out, "+ report.pdf") {
+	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
+		"work": {LocalRoot: local, RemoteRoot: remote},
+	})
+	out, err := runStatus(t, cfgPath, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "push") || !strings.Contains(out, "+ report.pdf") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
 
+// TestStatusCommandPrintsLocalDelete pins the fix at the CLI layer: a remote-side
+// deletion is reported as a local delete, not a push.
+func TestStatusCommandPrintsLocalDelete(t *testing.T) {
+	local, remote := statusFixture(t)
+	if err := os.WriteFile(filepath.Join(local, "keep.dat"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(remote, "keep.dat"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCheckoutMarker(t, remote)
+	saveBaseline(t, "work", local)
+	if err := os.Remove(filepath.Join(remote, "keep.dat")); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
+		"work": {LocalRoot: local, RemoteRoot: remote},
+	})
+	out, err := runStatus(t, cfgPath, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "del-local") || !strings.Contains(out, "- keep.dat") {
+		t.Fatalf("want a local-delete of keep.dat, got:\n%s", out)
+	}
+	if strings.Contains(out, "push") {
+		t.Fatalf("a remote delete must not be reported as a push:\n%s", out)
+	}
+}
+
 func TestStatusCommandRemoteNotMounted(t *testing.T) {
-	localRoot := t.TempDir()
+	local := t.TempDir()
 	missingRemote := filepath.Join(t.TempDir(), "gone")
 	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
-		"work": {LocalRoot: localRoot, RemoteRoot: missingRemote},
+		"work": {LocalRoot: local, RemoteRoot: missingRemote},
 	})
-	cmd := newStatusCmdWithDiffer(&cfgPath, fakeDiffer{})
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"work"})
-	err := cmd.Execute()
+	_, err := runStatus(t, cfgPath, "work")
 	if err == nil || !strings.Contains(err.Error(), "is not mounted") {
 		t.Fatalf("err = %v", err)
 	}
@@ -144,25 +176,19 @@ func writeCheckoutMarker(t *testing.T, remoteRoot string) {
 }
 
 func TestStatusCommandReportsNotCheckedOut(t *testing.T) {
-	remoteRoot := t.TempDir()
-	localRoot := t.TempDir()
+	local, remote := statusFixture(t)
+	// No marker: the profile is not checked out.
 	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
-		"work": {LocalRoot: localRoot, RemoteRoot: remoteRoot},
+		"work": {LocalRoot: local, RemoteRoot: remote},
 	})
-	// No marker: the profile is not checked out, so the differ must never run.
-	d := fakeDiffer{err: errors.New("differ must not be called when not checked out")}
-	cmd := newStatusCmdWithDiffer(&cfgPath, d)
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{"work"})
-	if err := cmd.Execute(); err != nil {
+	out, err := runStatus(t, cfgPath, "work")
+	if err != nil {
 		t.Fatal(err)
 	}
-	out := buf.String()
 	if !strings.Contains(out, "not checked out") {
 		t.Fatalf("want 'not checked out', got:\n%s", out)
 	}
 	if strings.Contains(out, "in sync") {
-		t.Fatalf("diffs should not run when not checked out:\n%s", out)
+		t.Fatalf("should not report in sync when not checked out:\n%s", out)
 	}
 }
