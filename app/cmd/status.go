@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/spf13/cobra"
 )
@@ -27,6 +28,13 @@ func newStatusCmd(cfgPath *string) *cobra.Command {
 			profile, ok := cfg.Profiles[name]
 			if !ok {
 				return fmt.Errorf("profile %q not found", name)
+			}
+			if unlisted, uerr := sanity.UnlistedLocal(profile); uerr == nil && len(unlisted) > 0 {
+				w := cmd.ErrOrStderr()
+				_, _ = fmt.Fprintln(w, "warning: local content outside this profile's subpaths (will NOT be synced):")
+				for _, u := range unlisted {
+					_, _ = fmt.Fprintf(w, "  %s\n", u)
+				}
 			}
 			st, err := status.Compute(name, profile)
 			if err != nil {

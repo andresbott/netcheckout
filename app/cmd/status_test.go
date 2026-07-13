@@ -192,3 +192,24 @@ func TestStatusCommandReportsNotCheckedOut(t *testing.T) {
 		t.Fatalf("should not report in sync when not checked out:\n%s", out)
 	}
 }
+
+func TestStatusWarnsOnUnlistedLocalContent(t *testing.T) {
+	local, remote := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(local, "top.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeStatusTestConfig(t, map[string]config.Profile{
+		"p": {LocalRoot: local, RemoteRoot: remote, Subpaths: []string{"a"}},
+	})
+	cmd := newStatusCmd(&cfgPath)
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{"p"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("status should exit 0, got %v", err)
+	}
+	if !strings.Contains(errBuf.String(), "top.txt") {
+		t.Errorf("stderr should warn about top.txt, got %q", errBuf.String())
+	}
+}
