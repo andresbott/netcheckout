@@ -3,6 +3,7 @@ package sanity
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
@@ -80,5 +81,108 @@ func TestCheckInvalidSubpathReturnsRootsOnly(t *testing.T) {
 	}
 	if len(r.Subpaths) != 0 {
 		t.Errorf("Subpaths should be empty when Targets() errors, got %+v", r.Subpaths)
+	}
+}
+
+func TestUnlistedLocal(t *testing.T) {
+	tests := []struct {
+		name     string
+		subpaths []string
+		// files to create under local_root, relative slash paths
+		files []string
+		// dirs to create under local_root (for empty-dir cases)
+		dirs []string
+		want []string
+	}{
+		{
+			name:     "no subpaths means whole root, nothing flagged",
+			subpaths: nil,
+			files:    []string{"a/f", "b/g", "top.txt"},
+			want:     nil,
+		},
+		{
+			name:     "flat uncovered dir with a file is flagged",
+			subpaths: []string{"a", "b"},
+			files:    []string{"a/f", "b/g", "c/x.txt"},
+			want:     []string{"c"},
+		},
+		{
+			name:     "nested sibling of a covered subpath is flagged, ancestor is not",
+			subpaths: []string{"a/2024"},
+			files:    []string{"a/2024/f", "a/2025/g"},
+			want:     []string{"a/2025"},
+		},
+		{
+			name:     "loose file at root is flagged individually",
+			subpaths: []string{"a"},
+			files:    []string{"a/f", "top.txt"},
+			want:     []string{"top.txt"},
+		},
+		{
+			name:     "empty uncovered dir is not flagged",
+			subpaths: []string{"a"},
+			files:    []string{"a/f"},
+			dirs:     []string{"b"},
+			want:     nil,
+		},
+		{
+			name:     "only covered content yields nothing",
+			subpaths: []string{"a", "b"},
+			files:    []string{"a/f", "b/deep/g"},
+			want:     nil,
+		},
+		{
+			name:     "shallowest dir is reported, not the nested file",
+			subpaths: []string{"a"},
+			files:    []string{"a/f", "c/deep/nested/f"},
+			want:     []string{"c"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			local := t.TempDir()
+			for _, d := range tc.dirs {
+				if err := os.MkdirAll(filepath.Join(local, filepath.FromSlash(d)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, f := range tc.files {
+				full := filepath.Join(local, filepath.FromSlash(f))
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := UnlistedLocal(config.Profile{LocalRoot: local, Subpaths: tc.subpaths})
+			if err != nil {
+				t.Fatalf("UnlistedLocal error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("UnlistedLocal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnlistedLocalMissingRoot(t *testing.T) {
+	got, err := UnlistedLocal(config.Profile{
+		LocalRoot: filepath.Join(t.TempDir(), "nope"),
+		Subpaths:  []string{"a"},
+	})
+	if err != nil || got != nil {
+		t.Fatalf("missing local root should be (nil, nil), got (%v, %v)", got, err)
+	}
+}
+
+func TestCheckPopulatesUnlistedLocal(t *testing.T) {
+	local, remote := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(local, "top.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := Check(config.Profile{LocalRoot: local, RemoteRoot: remote, Subpaths: []string{"a"}})
+	if !reflect.DeepEqual(r.UnlistedLocal, []string{"top.txt"}) {
+		t.Errorf("Check.UnlistedLocal = %v, want [top.txt]", r.UnlistedLocal)
 	}
 }
