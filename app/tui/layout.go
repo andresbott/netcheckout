@@ -89,6 +89,12 @@ func renderDetails(name string, p config.Profile, res *sanity.Result, width int)
 			b.WriteString("\n " + subpathMark(res, i) + " " + sub)
 		}
 	}
+	if res != nil && len(res.UnlistedLocal) > 0 {
+		b.WriteString("\n\n " + errStyle.Render(fmt.Sprintf("⚠ Not synced — outside subpaths (%d)", len(res.UnlistedLocal))))
+		for _, u := range res.UnlistedLocal {
+			b.WriteString("\n " + errStyle.Render("✗") + " " + u)
+		}
+	}
 	return b.String()
 }
 

@@ -137,6 +137,22 @@ func TestRenderDetailsSubpathMarksPendingAndUnknown(t *testing.T) {
 	}
 }
 
+func TestRenderDetailsShowsUnlistedLocal(t *testing.T) {
+	res := &sanity.Result{
+		LocalRoot:     true,
+		RemoteRoot:    true,
+		UnlistedLocal: []string{"top.txt", "c"},
+	}
+	p := config.Profile{LocalRoot: "/l", RemoteRoot: "/r", Subpaths: []string{"a"}}
+	out := renderDetails("p", p, res, 80)
+	if !strings.Contains(out, "top.txt") || !strings.Contains(out, "c") {
+		t.Errorf("renderDetails should list unlisted local paths, got:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "not synced") {
+		t.Errorf("renderDetails should warn these are not synced, got:\n%s", out)
+	}
+}
+
 func TestHumanBytes(t *testing.T) {
 	cases := map[int64]string{
 		0:       "0 B",
