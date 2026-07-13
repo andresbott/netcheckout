@@ -22,6 +22,8 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 	// Pre-flight: refuse if local content lies outside the declared subpaths, so a
 	// scoped push never silently skips local work. Runs before any mount/transfer;
 	// --force does not bypass it (this is data safety, not a lock override).
+	// A walk error (permissions, I/O, etc.) fails the operation closed — unlike
+	// status/Check, which swallow walk errors best-effort to report what it can.
 	if unlisted, err := sanity.UnlistedLocal(p); err != nil {
 		return nil, nil, err
 	} else if len(unlisted) > 0 {

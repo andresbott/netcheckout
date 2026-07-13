@@ -92,7 +92,9 @@ func TestUnlistedLocal(t *testing.T) {
 		files []string
 		// dirs to create under local_root (for empty-dir cases)
 		dirs []string
-		want []string
+		// symlinks to create: path is where the symlink goes, target is what it points to
+		symlinks []struct{ path, target string }
+		want     []string
 	}{
 		{
 			name:     "no subpaths means whole root, nothing flagged",
@@ -137,6 +139,20 @@ func TestUnlistedLocal(t *testing.T) {
 			files:    []string{"a/f", "c/deep/nested/f"},
 			want:     []string{"c"},
 		},
+		{
+			name:     "prefix collision: ab is not covered by subpath a",
+			subpaths: []string{"a"},
+			files:    []string{"a/f", "ab/x"},
+			want:     []string{"ab"},
+		},
+		{
+			name:     "symlink does not make a dir count as containing files",
+			subpaths: []string{"a"},
+			files:    []string{"a/f"},
+			// a symlink is created in setup below (see Item 1b); "b" holds only that symlink
+			symlinks: []struct{ path, target string }{{path: "b/link", target: "a/f"}},
+			want:     nil,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,6 +168,19 @@ func TestUnlistedLocal(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(full, []byte("x"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, sl := range tc.symlinks {
+				full := filepath.Join(local, filepath.FromSlash(sl.path))
+				if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(sl.target, full); err != nil {
+					if os.IsExist(err) || os.IsPermission(err) {
+						// Skip on platforms without symlink support or permission issues
+						t.Skip("symlink creation not supported on this platform")
+					}
 					t.Fatal(err)
 				}
 			}
