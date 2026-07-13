@@ -12,12 +12,26 @@ import (
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/marker"
 	"github.com/andresbott/netcheckout/internal/reconcile"
+	"github.com/andresbott/netcheckout/internal/sanity"
 )
 
 // reconcileProfile is the shared body of Sync and Checkin: lock+baseline checks,
 // classify, dry-run, apply, and baseline/marker refresh. It does NOT remove the
 // marker (Checkin does that after a clean return). relpaths is the scope.
 func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Profile, id ident.Ident, relpath string, opts Options, rep *Report) (*marker.Marker, *baseline.Baseline, error) {
+	// Pre-flight: refuse if local content lies outside the declared subpaths, so a
+	// scoped push never silently skips local work. Runs before any mount/transfer;
+	// --force does not bypass it (this is data safety, not a lock override).
+	// A walk error (permissions, I/O, etc.) fails the operation closed — unlike
+	// status/Check, which swallow walk errors best-effort to report what it can.
+	if unlisted, err := sanity.UnlistedLocal(p); err != nil {
+		return nil, nil, err
+	} else if len(unlisted) > 0 {
+		return nil, nil, fmt.Errorf(
+			"refusing to %s %q: local content is outside the profile's subpaths and would not be synced (add it to subpaths or remove it):\n  %s",
+			rep.Action, name, strings.Join(unlisted, "\n  "))
+	}
+
 	remoteRoot := config.ExpandRoot(p.RemoteRoot)
 	localRoot := config.ExpandRoot(p.LocalRoot)
 
