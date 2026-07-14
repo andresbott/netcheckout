@@ -106,7 +106,7 @@ func TestCheckoutRegisteredOnRoot(t *testing.T) {
 	t.Fatal("checkout command not registered on root")
 }
 
-func TestCheckoutCommandPrintsProgressiveChanges(t *testing.T) {
+func TestCheckoutCommandPrintsLockedMessage(t *testing.T) {
 	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	root := t.TempDir()
 	local := filepath.Join(root, "local")
@@ -126,12 +126,13 @@ func TestCheckoutCommandPrintsProgressiveChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "add") || !strings.Contains(out, "local") || !strings.Contains(out, "file.txt") {
-		t.Errorf("want a per-file change line for file.txt, got:\n%s", out)
+	// Checkout only locks now: it reports the lock and points at sync, and copies
+	// no per-file changes.
+	if !strings.Contains(out, "checked out") || !strings.Contains(out, "sync") {
+		t.Errorf("want a 'checked out … run sync' summary, got:\n%s", out)
 	}
-	// The summary must still follow the streamed changes.
-	if !strings.Contains(out, "checked out") {
-		t.Errorf("want the summary line after the changes, got:\n%s", out)
+	if entries, err := os.ReadDir(local); err == nil && len(entries) != 0 {
+		t.Errorf("checkout must not populate the local dir, got %d entries", len(entries))
 	}
 }
 

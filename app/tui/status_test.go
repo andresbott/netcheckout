@@ -225,9 +225,10 @@ func manyChangesResult(n int) *status.ProfileStatus {
 	return &status.ProfileStatus{CheckedOut: true, HasBaseline: true, Targets: []status.TargetStatus{{Push: changes}}}
 }
 
-// TestActivityStatusScrolls: a change list taller than the pane hides its tail
-// until PgDn scrolls it into view (and shows the scroll hint), and PgUp returns
-// to the top.
+// TestActivityStatusScrolls: a change list taller than the pane hides its tail.
+// Scrolling is strictly Tab-gated — the keys do nothing in the Actions pane;
+// only once Tab focuses the Activity panel does PgDn reveal the tail and PgUp
+// return to the top.
 func TestActivityStatusScrolls(t *testing.T) {
 	m := openActions(t, testConfig())
 	m.profile.result = manyChangesResult(40)
@@ -235,8 +236,19 @@ func TestActivityStatusScrolls(t *testing.T) {
 	if v := m.View(); !strings.Contains(v, "file00.txt") || strings.Contains(v, "file39.txt") {
 		t.Fatalf("initial view should show the head, not the tail:\n%s", v)
 	}
+	// Actions pane: the scroll keys are inert and the footer shows no scroll hint.
+	if strings.Contains(m.View(), "Scroll") {
+		t.Errorf("actions-pane footer should not show a scroll hint:\n%s", m.View())
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
+	if m.profile.statusScroll != 0 {
+		t.Errorf("PgDn in the actions pane must not scroll, got scroll=%d", m.profile.statusScroll)
+	}
+
+	// Tab focuses the Activity panel; now the footer offers the scroll keys.
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
 	if !strings.Contains(m.View(), "Scroll") {
-		t.Errorf("footer should offer the scroll hint when content overflows:\n%s", m.View())
+		t.Errorf("activity-pane footer should offer the scroll hint:\n%s", m.View())
 	}
 
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyPgDown})
@@ -252,6 +264,94 @@ func TestActivityStatusScrolls(t *testing.T) {
 	}
 	if v := m.View(); !strings.Contains(v, "file00.txt") {
 		t.Errorf("back at the top the head should be visible:\n%s", v)
+	}
+}
+
+// TestTabTogglesActivityPane: Tab moves focus Actions → Activity and back, and
+// the actions view always opens focused on the actions pane.
+func TestTabTogglesActivityPane(t *testing.T) {
+	m := openActions(t, testConfig())
+	if m.pane != paneActions {
+		t.Fatalf("actions view should open on the actions pane, got %d", m.pane)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.pane != paneActivity {
+		t.Errorf("Tab should focus the activity pane, got %d", m.pane)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	if m.pane != paneActions {
+		t.Errorf("Tab again should return to the actions pane, got %d", m.pane)
+	}
+}
+
+// TestActivityPaneArrowsScroll: once the Activity panel is focused, the arrow
+// keys scroll it line by line and leave the action cursor untouched.
+func TestActivityPaneArrowsScroll(t *testing.T) {
+	m := openActions(t, testConfig())
+	m.profile.result = manyChangesResult(40) // taller than the pane
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab})
+	cursor := m.profile.cursor
+
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.profile.statusScroll != 1 {
+		t.Errorf("Down should scroll one line, got %d", m.profile.statusScroll)
+	}
+	if m.profile.cursor != cursor {
+		t.Errorf("scrolling must not move the action cursor: got %d, want %d", m.profile.cursor, cursor)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.profile.statusScroll != 0 {
+		t.Errorf("Up should scroll back to the top, got %d", m.profile.statusScroll)
+	}
+}
+
+// TestActionsPaneArrowsMoveCursor: in the actions pane the arrow keys move the
+// action cursor and never scroll the Activity panel, even when it overflows.
+func TestActionsPaneArrowsMoveCursor(t *testing.T) {
+	m := openActions(t, testConfig())
+	m.checks[m.profile.name] = &sanity.Result{CheckedOut: true} // Status/Sync/Check-in
+	m.profile.result = manyChangesResult(40)                    // scrollable, to prove it doesn't
+
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.profile.cursor != 1 {
+		t.Errorf("Down should move the action cursor to 1, got %d", m.profile.cursor)
+	}
+	if m.profile.statusScroll != 0 {
+		t.Errorf("Down in the actions pane must not scroll, got %d", m.profile.statusScroll)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyUp})
+	if m.profile.cursor != 0 {
+		t.Errorf("Up should move the action cursor back to 0, got %d", m.profile.cursor)
+	}
+}
+
+// TestEscFromActivityReturnsToList: Esc always leaves the profile for the list,
+// even when the Activity panel holds focus — there is no layered back-out.
+func TestEscFromActivityReturnsToList(t *testing.T) {
+	m := openActions(t, testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab}) // focus Activity
+	if m.pane != paneActivity {
+		t.Fatalf("Tab should focus the activity pane, got %d", m.pane)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.sub != subList {
+		t.Errorf("Esc from the activity pane should return to the profile list, got sub=%d", m.sub)
+	}
+}
+
+// TestOpenProfileResetsPane: opening a profile always focuses the actions pane,
+// so a stale activity focus (e.g. left over after a check-in returned to the
+// list) never leaks into the next profile.
+func TestOpenProfileResetsPane(t *testing.T) {
+	m := openActions(t, testConfig())
+	m.sub = subList        // as a completed check-in leaves it,
+	m.pane = paneActivity  // still focused on the activity pane
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.sub != subActions {
+		t.Fatalf("Enter should reopen a profile, got sub=%d", m.sub)
+	}
+	if m.pane != paneActions {
+		t.Errorf("opening a profile should reset focus to the actions pane, got %d", m.pane)
 	}
 }
 

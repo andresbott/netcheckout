@@ -32,6 +32,13 @@ type Plan struct {
 	Conflicts     []string
 }
 
+// Empty reports whether the plan has no pending operations in any bucket — i.e.
+// local and remote are already in sync (nothing to pull, push, delete, or
+// resolve). Checkin uses it to decide whether a profile may be released.
+func (p Plan) Empty() bool {
+	return len(p.Pull)+len(p.Push)+len(p.RemoteDeletes)+len(p.LocalDeletes)+len(p.Conflicts) == 0
+}
+
 // ConflictError reports that the same paths changed on both sides.
 type ConflictError struct{ Paths []string }
 

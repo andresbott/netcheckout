@@ -111,6 +111,15 @@ func ValidateName(name string) error {
 	return nil
 }
 
+// ValidateIdentity reports whether a client identity is usable: a concrete,
+// non-empty "who" is required to record checkout markers.
+func ValidateIdentity(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("identity is required")
+	}
+	return nil
+}
+
 // ValidateRoot reports whether a root path is usable: non-empty and absolute
 // once ~ and environment variables are expanded.
 func ValidateRoot(root string) error {

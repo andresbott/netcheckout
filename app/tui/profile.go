@@ -31,6 +31,7 @@ type profileModel struct {
 	fileStats    *localstat.Stats      // last successful local scan; nil until run
 	statErr      error                 // last local-scan error; nil if none
 	statusScroll int                   // first visible Activity line; scrolled with PgUp/PgDn
+	canceled     bool                  // the in-flight action was stopped via Esc; shows a "Canceled." note
 }
 
 func newProfileView(name string) profileModel { return profileModel{name: name} }
@@ -135,6 +136,10 @@ func renderActivity() string {
 // the report is empty) still renders as an error rather than an empty body.
 func renderStatus(p profileModel, width int) string {
 	switch {
+	case p.canceled:
+		// Wins over any leftover state (a prior result, a dropped straggler's report)
+		// until the next action clears it.
+		return "Canceled."
 	case p.acting:
 		// Show applied changes as they stream in; before the first one arrives,
 		// a bare "Working…".

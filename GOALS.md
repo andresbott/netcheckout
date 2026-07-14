@@ -18,8 +18,8 @@ back, and hoping nobody else edits it meanwhile — is error-prone.
 
 `netcheckout` makes that workflow explicit and safe:
 
-- **Checkout**: pull a remote folder down to a fast local working copy.
-- **Check in**: push your changes back to the remote when you're done.
+- **Checkout**: claim a remote folder by placing a marker; `sync` then pulls it down to a fast local working copy.
+- **Check in**: release the folder once your changes are synced back to the remote.
 - **Marker**: while checked out, a small file is left on the remote announcing *who*
   has it, so a second person (or a second machine) doesn't clobber your work.
 
@@ -36,14 +36,14 @@ own local copy, and a marker tells everyone else you're holding it.
 | **Profile** | A named pair of roots: one **local root** and one **remote root**. |
 | **Root** | A base directory. The **remote root** lives on the mounted network share; the **local root** is on fast local disk. |
 | **Subfolder / relpath** | A path *relative to both roots* selecting what to check out (e.g. `./2025/jan`). `./` (or omitted) means the whole root. A profile MAY pre-declare a set of these as `subpaths` (see §4) to scope it. |
-| **Checkout** | **Copy** `remote_root/<relpath>` → `local_root/<relpath>` (remote keeps its files) and place the profile marker on the remote. |
-| **Check in** | Reconcile `local_root` ↔ `remote_root`, then remove the marker (releases the whole profile). |
+| **Checkout** | Place the profile marker on the remote and record an empty local baseline. Copies **no** files — pulling the tree down is `sync`'s job. |
+| **Check in** | Verify `local_root` and `remote_root` are already in sync, then remove the marker (releases the whole profile). Refuses if anything is unsynced. |
 | **Marker** | A small file at the **remote root** recording who holds the profile, from which host, when, and which relpaths are pulled. Acts as the lock. |
 
 A profile is checked out **as a unit**: exactly **one** marker/lock per profile, at its remote
-root. A `relpath` only scopes *which files are copied* (checkout/sync) — it never splits the
-lock, so you can't hold `./jan` while `./march` stays free. The profile is held, and released,
-as a whole.
+root. A `relpath` only scopes *which files are in scope* — recorded at checkout, copied by
+`sync` — it never splits the lock, so you can't hold `./jan` while `./march` stays free. The
+profile is held, and released, as a whole.
 
 ---
 
@@ -54,11 +54,13 @@ These four choices shape the whole design. Defaults below are proposed; see
 
 1. **Language: Go.** Single static binary, no runtime deps on target machines, natural
    fit for a CLI that shells out to `rsync` and parses JSON.
-2. **Checkout mode: Copy + marker.** Checkout **copies** files from the remote down to
-   local; the remote **keeps its files** as the canonical copy. A marker is written on
-   the remote to announce the checkout and act as a cooperative lock. Check-in copies
-   your working copy back and removes the marker. Nothing is ever moved or deleted off
-   the remote, so there is no local-only / data-loss window.
+2. **Checkout mode: marker-only; `sync` moves the data.** Checkout writes a marker on the
+   remote to announce the checkout and act as a cooperative lock, and records an empty local
+   baseline — it copies **no** files. `sync` is the single data-moving command: it pulls the
+   remote down and pushes local work back. Check-in copies nothing either — it verifies the
+   profile is already in sync, then removes the marker. The remote **keeps its files** as the
+   canonical copy throughout, and nothing is moved or deleted off it outside an explicit
+   `sync`, so there is no local-only / data-loss window.
 3. **Selection model: 2 roots + relative path, with optional declared scope.** A profile
    is one `local_root` + one `remote_root`. You pick what to check out by passing a
    relative path at runtime; a profile MAY additionally declare a `subpaths` list (see §4)
@@ -173,7 +175,7 @@ This local state also answers "what does this machine hold" without scanning rem
 marker/lock reconciliation inside `status` remains a separate, still-open question (§13 Q9);
 `status` today only diffs content via `rsync` dry-run.
 
-The manifest tracks **regular files only**. A symlink is copied by `rsync` at checkout like
+The manifest tracks **regular files only**. A symlink is copied by `rsync` during `sync` like
 anything else, but `Snapshot`/`Scan` skip it, so it is never recorded in the baseline and never
 reconciled by `sync`/`checkin` — a symlink created locally is not pushed. It follows that `--clean`
 (§9), which removes the entire local working copy, would silently discard any such symlink.
@@ -187,15 +189,16 @@ reconciled by `sync`/`checkin` — a symlink created locally is not pushed. It f
 | `netcheckout` | Launch the interactive TUI to manage profiles (add/edit/delete). Prints the plain-text profile list instead when stdout isn't a terminal (e.g. piped). |
 | `netcheckout list` | Print configured profiles and their roots as plain text. |
 | `netcheckout status <profile>` | Run `rsync` dry-run diffs in both directions and report whether the profile's local and remote roots differ, listing the changes needed to bring them in sync. |
-| `netcheckout checkout <profile> [relpath]` | Copy `remote→local` (remote unchanged), write the profile marker, record the baseline. `relpath` scopes which files are pulled; the lock is the whole profile. |
+| `netcheckout checkout <profile> [relpath]` | Write the profile marker and record an empty baseline — no files are copied (run `sync` to pull). `relpath` scopes the recorded relpaths; the lock is the whole profile. |
 | `netcheckout sync <profile> [relpath]` | Reconcile a held checkout in place (§9.5): push your changes, pull remote-only changes, stop on same-file conflicts. Lock-required and untouched. `relpath` scopes which held files reconcile. |
-| `netcheckout checkin <profile>` | Finish and release the whole profile: reconcile like `sync`, then remove the marker. No `relpath` — partial check-in isn't supported. |
+| `netcheckout checkin <profile>` | Finish and release the whole profile: verify local and remote are already in sync (same engine as `sync`), then remove the marker. Refuses if anything is unsynced — run `sync` first. No `relpath`; no `--force`. |
 | `netcheckout init` | Write a starter config file if none exists. |
 
 **Global flags:**
 
 - `--dry-run` — show the exact `rsync` plan and marker actions without executing.
-- `--force` — override an existing lock (see conflict rules).
+- `--force` — override an existing lock (see conflict rules). Not available on `checkin`, which
+  requires a this-machine-owned, fully-synced profile.
 - `--config <path>` — use an alternate config file.
 - `-v/--verbose` — surface `rsync` progress and detail.
 
@@ -209,7 +212,8 @@ releasing the profile.
 ## 8. Checkout flow
 
 For `checkout <profile> [relpath]` (`relpath` omitted = all declared `subpaths`, or the whole
-root; it only scopes which files copy — the lock is always the whole profile):
+root; it only scopes the recorded relpaths that `sync` later copies — the lock is always the
+whole profile):
 
 1. Load config; resolve `identity`, `local_root`, `remote_root`.
 2. Verify the remote root is present/mounted; refuse otherwise.
@@ -218,13 +222,16 @@ root; it only scopes which files copy — the lock is always the whole profile):
      hold it; e.g. adding a relpath).
    - Anyone else, **or your own identity on another host** → **refuse** (unless `--force`);
      reclaiming means deleting the lock by hand.
-4. `rsync -a` `remote_root/<relpath>/` → `local_root/<relpath>/` (remote unchanged).
-5. Verify transfer succeeded (rsync exit status; optional checksum pass).
-6. Write (or update) the marker atomically on the remote, adding `relpath` to its `relpaths`.
-7. Record/extend the **baseline** in local state (§6): the `path → size+mtime` snapshot of what
-   was pulled.
+4. Refuse if the local target already holds content (an existing working copy). This guard is
+   absolute — `--force` does not bypass it — and keeping the target empty makes the first
+   `sync` a clean pull.
+5. Record an **empty baseline** in local state (§6) for the scoped `relpaths`. No files are
+   copied; `sync` pulls the remote down afterwards, and the empty baseline makes it classify
+   every remote file as a fresh pull (never as a delete against a phantom snapshot).
+6. Write (or update) the marker atomically on the remote.
 
-If any step fails, roll back and leave the remote untouched (no marker written).
+If any step fails, roll back (remove the just-written baseline) and leave the remote untouched
+(no marker written).
 
 ---
 
@@ -235,17 +242,16 @@ supported):
 
 1. Load config; resolve roots and identity.
 2. Verify the remote root is present/mounted.
-3. Confirm the marker exists and is **yours (this machine)** (refuse on mismatch unless
-   `--force`).
-4. **Reconcile like `sync` (§9.5)** across everything held: push your changes (including
-   baseline-scoped deletes), pull any remote-only changes, and **stop on a same-file conflict**
-   (nothing written on either side; `--force` resolves conflicts local-wins). This settles the
-   old `--delete` question — deletions propagate, but only for files that were in the baseline
-   and you removed, never a blunt mirror.
-5. Verify success.
-6. Remove the marker (releases the profile).
-7. Clear the baseline / local state for this profile.
-8. _(Optional, off by default)_ `--clean` removes the local working copy after a successful
+3. Confirm the marker exists and is **yours (this machine)**. There is **no `--force`**: a
+   foreign or mismatched lock always refuses (reclaim it by hand, per §3/§10).
+4. **Verify the profile is already in sync.** Run the same three-way reconcile engine as `sync`
+   (§9.5) as a read-only check: if it finds *any* pending work — a push, a pull, a
+   baseline-scoped delete, or a same-file conflict — checkin **fails** and lists what is
+   pending, leaving the marker in place. It copies nothing: moving data is `sync`'s job. Run
+   `sync` until the profile is clean, then check in.
+5. Remove the marker (releases the profile).
+6. Clear the baseline / local state for this profile.
+7. _(Optional, off by default)_ `--clean` removes the local working copy after a successful
    release.
 
 ---
@@ -305,9 +311,11 @@ file* changed on both sides. The lock's ownership and existence are untouched th
 ## 11. Safety & error handling
 
 - **Checkout never modifies the remote except to write the marker** — the remote copy is always preserved.
+- **Checkout and check-in never move file data** — only `sync` copies files. Checkout never
+  writes into the local working copy either; it only records local state (the baseline + marker).
 - Refuse to run if a root is missing or the remote appears unmounted.
-- `rsync` failures abort the operation without writing a "checked out" marker or
-  deleting anything; partial transfers can be safely retried.
+- `rsync` failures during `sync` abort the operation without deleting anything; partial transfers
+  can be safely retried. A failed marker write on `checkout` rolls back the just-written baseline.
 - `--dry-run` is available on every mutating command.
 - Clear, actionable error messages (e.g. "remote root /mnt/smb/fotos/2025 is not
   mounted", "folder is checked out by alice@nas since 2026-07-01").
@@ -361,11 +369,13 @@ file* changed on both sides. The lock's ownership and existence are untouched th
   and a **subpath discrepancy scan** that flags on-disk folders not covered by a
   profile's declared `subpaths` (see open question 8). Marker format and local-state
   reconciliation (see open question 9) remain open.
-- **M3 — Checkout:** `checkout` (copy + per-profile marker/lock), conflict rules (this-machine
-  ownership), the checkout **baseline** in local state, `--dry-run`, `--force`.
-- **M4 — Check-in & sync:** `checkin` (reconcile-then-release the whole profile, `--clean`) and
-  `sync` (§9.5 three-way reconcile against the baseline, lock-required, stop on conflict). Both
-  share the reconcile engine and the baseline.
+- **M3 — Checkout:** `checkout` (per-profile marker/lock + empty baseline; no file copy),
+  conflict rules (this-machine ownership), the checkout **baseline** in local state, `--dry-run`,
+  `--force`.
+- **M4 — Check-in & sync:** `checkin` (verify-in-sync then release the whole profile, `--clean`,
+  no `--force`) and `sync` (§9.5 three-way reconcile against the baseline — the single
+  data-moving command, lock-required, stop on conflict). Both share the reconcile engine and the
+  baseline.
 - **M5 — Polish:** verbose/progress output, thorough error messages, tests.
 
 ---

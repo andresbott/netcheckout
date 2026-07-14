@@ -63,35 +63,12 @@ func TestCheckoutCmdProducesMarker(t *testing.T) {
 
 	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
 	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
-	_, res := drainStream(t, checkoutCmd(runner, ident.Ident{By: "me@host", Host: "host"}, "work", p, lifecycle.Options{})())
+	_, res := drainStream(t, checkoutCmd(context.Background(), runner, ident.Ident{By: "me@host", Host: "host"}, "work", p, 0, lifecycle.Options{})())
 	if res.err != nil {
 		t.Fatalf("checkout cmd err: %v", res.err)
 	}
 	if _, ok, _ := marker.Read(remote); !ok {
 		t.Error("checkout cmd did not write a marker")
-	}
-}
-
-func TestCheckoutCmdStreamsAppliedChanges(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
-	root := t.TempDir()
-	local := filepath.Join(root, "local")
-	remote := filepath.Join(root, "remote")
-	_ = os.MkdirAll(remote, 0o755)
-	_ = os.WriteFile(filepath.Join(remote, "f"), []byte("x"), 0o644)
-
-	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
-	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
-	events, res := drainStream(t, checkoutCmd(runner, ident.Ident{By: "me@host", Host: "host"}, "work", p, lifecycle.Options{})())
-	if res.err != nil {
-		t.Fatalf("checkout cmd err: %v", res.err)
-	}
-	if len(events) == 0 {
-		t.Fatal("want at least one streamed apply event from checkout")
-	}
-	last := events[len(events)-1]
-	if last.Side != reconcile.SideLocal {
-		t.Errorf("streamed event = %+v, want a local-side pull change", last)
 	}
 }
 
@@ -163,7 +140,7 @@ func TestSyncCmdProducesResult(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("EDITED"), 0o644)
 
 	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
-	events, res := drainStream(t, syncCmd(runner, id, name, p, lifecycle.Options{})())
+	events, res := drainStream(t, syncCmd(context.Background(), runner, id, name, p, 0, lifecycle.Options{})())
 	if res.err != nil {
 		t.Fatalf("sync cmd err: %v", res.err)
 	}
@@ -194,7 +171,7 @@ func TestSyncConflictShowsConflictingPathInActivity(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(p.RemoteRoot, "keep.txt"), []byte("REMOTE"), 0o644)
 
 	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
-	msg := syncCmd(runner, id, name, p, lifecycle.Options{})()
+	msg := syncCmd(context.Background(), runner, id, name, p, 0, lifecycle.Options{})()
 	res, ok := msg.(actionResultMsg)
 	if !ok {
 		t.Fatalf("want actionResultMsg, got %T", msg)

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+
 	"github.com/andresbott/netcheckout/internal/lifecycle"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -67,6 +69,10 @@ const (
 	confirmDelete confirmKind = iota
 	confirmCheckin
 	confirmCheckout
+	// confirmCancel guards stopping an already-running action (Sync/Checkout/
+	// Check-in/Status) rather than starting one, so its "activate" button stops the
+	// operation and its dismiss keeps it running.
+	confirmCancel
 )
 
 // confirmButton renders a bracketed [ label ] button: accent+bold when it is the
@@ -88,18 +94,26 @@ func confirmModal(kind confirmKind, name string, focus confirmFocus, clean bool,
 	if termWidth <= 0 {
 		termWidth = 80 // matches mainView's pre-resize fallback
 	}
-	title, question, activate := "Confirm delete", "Delete profile \""+name+"\"?", "Delete"
+	title, question, activate, dismiss := "Confirm delete", "Delete profile \""+name+"\"?", "Delete", "Cancel"
 	switch kind {
 	case confirmCheckin:
 		title, question, activate = "Confirm check-in", "Check in and release \""+name+"\"?", "Check in"
 	case confirmCheckout:
 		title, question, activate = "Confirm checkout", "Check out \""+name+"\"?", "Check out"
+	case confirmCancel:
+		// This dialog guards stopping a run, not starting one, so "Cancel" would be
+		// ambiguous — the dismiss button keeps the operation running instead.
+		title, question, activate, dismiss = "Confirm cancel", "Stop the running operation?", "Stop", "Keep running"
 	}
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top,
 		confirmButton(activate, focus == confirmFocusDelete), "   ",
-		confirmButton("Cancel", focus == confirmFocusCancel))
+		confirmButton(dismiss, focus == confirmFocusCancel))
 	sep := helpTextStyle.Render(" · ")
-	help := hint("tab", "Move") + sep + hint("enter/space", "Activate") + sep + hint("esc", "Cancel")
+	escHint := "Cancel"
+	if kind == confirmCancel {
+		escHint = "Keep running"
+	}
+	help := hint("tab", "Move") + sep + hint("enter/space", "Activate") + sep + hint("esc", escHint)
 
 	// The check-in dialog carries a "delete local copy" checkbox above the buttons.
 	checkbox := ""
@@ -201,8 +215,31 @@ func (m model) activateConfirm() (tea.Model, tea.Cmd) {
 		return m.checkinConfirmed()
 	case confirmCheckout:
 		return m.checkoutConfirmed()
+	case confirmCancel:
+		return m.cancelAction()
 	}
 	return m.deleteConfirmedProfile()
+}
+
+// cancelAction stops the in-flight action the confirm modal was guarding. For a
+// streaming mutation it cancels the context — killing the live rsync via
+// exec.CommandContext; for Status there is nothing to kill (m.cancel is nil), so
+// it only abandons the result. Either way it bumps actionSeq so the run's
+// straggler messages are dropped, marks the profile canceled for the "Canceled."
+// note, and returns to the profile's actions view.
+func (m model) cancelAction() (tea.Model, tea.Cmd) {
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.actionSeq++
+	m.profile.acting = false
+	m.profile.checking = false
+	m.profile.scanning = false
+	m.profile.canceled = true
+	m.mode = modeMain
+	m.sub = subActions
+	return m, nil
 }
 
 // deleteConfirmedProfile removes m.confirmName from the config and persists it,
@@ -234,9 +271,15 @@ func (m model) checkinConfirmed() (tea.Model, tea.Cmd) {
 	m.profile.actionErr = nil
 	m.profile.actionReport = nil
 	m.profile.applied = nil
+	m.profile.canceled = false
 	m.profile.statusScroll = 0
-	opts := lifecycle.Options{Force: m.actForce, Clean: m.checkinClean}
-	return m, checkinCmd(m.runner, m.id, name, m.cfg.Profiles[name], opts)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.actionSeq++
+	// checkin has no --force: it only releases a this-machine-owned, fully-synced
+	// profile. The footer force toggle applies to checkout/sync, not here.
+	opts := lifecycle.Options{Clean: m.checkinClean}
+	return m, checkinCmd(ctx, m.runner, m.id, name, m.cfg.Profiles[name], m.actionSeq, opts)
 }
 
 // checkoutConfirmed runs lifecycle.Runner.Checkout for m.confirmName once the
@@ -251,7 +294,11 @@ func (m model) checkoutConfirmed() (tea.Model, tea.Cmd) {
 	m.profile.actionErr = nil
 	m.profile.actionReport = nil
 	m.profile.applied = nil
+	m.profile.canceled = false
 	m.profile.statusScroll = 0
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.actionSeq++
 	opts := lifecycle.Options{Force: m.actForce}
-	return m, checkoutCmd(m.runner, m.id, name, m.cfg.Profiles[name], opts)
+	return m, checkoutCmd(ctx, m.runner, m.id, name, m.cfg.Profiles[name], m.actionSeq, opts)
 }

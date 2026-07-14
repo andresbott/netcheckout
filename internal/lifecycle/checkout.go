@@ -10,15 +10,14 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/marker"
-	"github.com/andresbott/netcheckout/internal/reconcile"
-	"github.com/andresbott/netcheckout/internal/rsync"
 )
 
-// Checkout pulls remote -> local for the scoped relpath, writes the per-profile
-// marker, and records the baseline. relpath scopes which files copy; the lock is
-// always the whole profile. An existing foreign marker refuses unless Force.
-// When opts.OnApply is set (and not a dry-run), each pulled file is streamed live
-// as a SideLocal reconcile.Event, matching Sync/Checkin.
+// Checkout locks a profile: it verifies the remote is mounted and not already
+// held elsewhere, refuses to lock over a non-empty local target, then records an
+// empty baseline and writes the per-profile marker. It copies NO files — pulling
+// the remote down is sync's job. relpath scopes the recorded relpaths (and thus
+// what the first sync reconciles); the lock is always the whole profile. An
+// existing foreign marker refuses unless Force.
 func (r Runner) Checkout(ctx context.Context, name string, p config.Profile, id ident.Ident, relpath string, opts Options) (Report, error) {
 	rep := Report{Action: "checkout", DryRun: opts.DryRun}
 	remoteRoot := config.ExpandRoot(p.RemoteRoot)
@@ -41,51 +40,30 @@ func (r Runner) Checkout(ctx context.Context, name string, p config.Profile, id 
 	}
 
 	rel := normalizeRelpath(relpath)
-	src := filepath.Join(remoteRoot, rel)
 	dst := filepath.Join(localRoot, rel)
 
-	// Refuse to check out over an existing local copy. This guard is absolute:
-	// unlike the lock check, --force does not bypass it.
+	// Refuse to lock over an existing local copy. This guard is absolute: unlike
+	// the lock check, --force does not bypass it. Keeping the target empty means
+	// the first sync after checkout is an unambiguous pull, not a wall of
+	// "added on both sides" conflicts against the empty baseline recorded below.
 	if err := ensureLocalTargetVacant(dst, name); err != nil {
 		return rep, err
 	}
 
-	job := rsync.Job{
-		Local:     rsync.Endpoint{Path: dst},
-		Remote:    rsync.Endpoint{Path: src},
-		Direction: rsync.Pull,
-	}
-
+	// Dry-run: the checks passed and nothing is written. Checkout copies no files,
+	// so there is nothing to preview beyond "would write the marker".
 	if opts.DryRun {
-		d, err := r.Syncer.Diff(ctx, job)
-		if err != nil {
-			return rep, err
-		}
-		for _, c := range d.Changes {
-			rep.Pulled = append(rep.Pulled, c.Path)
-		}
 		return rep, nil
 	}
 
-	if opts.OnApply != nil {
-		job.OnChange = reconcile.PullEmitter(opts.OnApply)
-	}
-	res, err := r.Syncer.Sync(ctx, job)
-	if err != nil {
-		return rep, err // transfer failed: no marker, no baseline
-	}
-	for _, c := range res.Changes {
-		rep.Pulled = append(rep.Pulled, c.Path)
-	}
-
+	// Record an EMPTY baseline. The local target is vacant (guard above), so there
+	// is nothing to snapshot; the empty manifest makes the first sync classify
+	// every remote file as a fresh pull. Snapshotting the remote here instead
+	// would make sync read the empty local as a baseline-scoped delete and wipe
+	// the remote — so the baseline must be empty, never the remote's contents.
 	relpaths := []string{rel}
-
-	files, err := baseline.Snapshot(localRoot, relpaths)
-	if err != nil {
-		return rep, err
-	}
 	now := r.now()
-	b := &baseline.Baseline{Profile: name, Relpaths: relpaths, Files: files, LastSyncAt: now}
+	b := &baseline.Baseline{Profile: name, Relpaths: relpaths, Files: map[string]baseline.FileState{}, LastSyncAt: now}
 	if err := baseline.Save(b); err != nil {
 		return rep, err
 	}

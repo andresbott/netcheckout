@@ -41,14 +41,20 @@ func renderFooter(width int) string {
 // renderProfileFooter is the actions-substate bottom key-hint bar. force
 // reflects the current toggle state for the mutating actions. (The clean option
 // is check-in only and lives as a checkbox in that dialog, not on this bar.)
-// canScroll adds a PgUp/PgDn hint only when the Activity content overflows.
-func renderProfileFooter(width int, force, canScroll bool) string {
-	parts := []string{
-		hint("↵", "Run"), hint("↑↓", "Select"), hint("esc", "Back"),
-		hint("f", "force:"+onOff(force)),
-	}
-	if canScroll {
-		parts = append(parts, hint("PgUp/PgDn", "Scroll"))
+// The hints are pane-aware: the Actions pane offers Run/Select plus a Tab to the
+// Activity panel; the Activity pane offers the scroll keys plus a Tab back.
+func renderProfileFooter(width int, force, activityFocused bool) string {
+	var parts []string
+	if activityFocused {
+		parts = []string{
+			hint("↑↓/PgUp/PgDn", "Scroll"), hint("tab", "Actions"),
+			hint("esc", "Back"), hint("f", "force:"+onOff(force)),
+		}
+	} else {
+		parts = []string{
+			hint("↵", "Run"), hint("↑↓", "Select"), hint("tab", "Activity"),
+			hint("esc", "Back"), hint("f", "force:"+onOff(force)),
+		}
 	}
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
 }

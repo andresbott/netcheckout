@@ -15,19 +15,34 @@ import (
 	"github.com/andresbott/netcheckout/internal/sanity"
 )
 
-// reconcileProfile is the shared body of Sync and Checkin: lock+baseline checks,
-// classify, dry-run, apply, and baseline/marker refresh. It does NOT remove the
-// marker (Checkin does that after a clean return). relpaths is the scope.
-func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Profile, id ident.Ident, relpath string, opts Options, rep *Report) (*marker.Marker, *baseline.Baseline, error) {
+// profilePlan bundles the shared preflight outcome: the read marker, the loaded
+// baseline, the resolved relpath scope, the expanded roots, and the three-way
+// reconcile plan — everything sync and checkin need without either one having
+// written anything to disk yet.
+type profilePlan struct {
+	marker     *marker.Marker
+	baseline   *baseline.Baseline
+	relpaths   []string
+	localRoot  string
+	remoteRoot string
+	plan       reconcile.Plan
+}
+
+// classifyProfile runs the checks shared by sync and checkin and computes the
+// three-way reconcile plan, mutating nothing on disk. It is the single seam that
+// keeps sync (which applies the plan) and checkin (which refuses to release while
+// the plan is non-empty) from ever disagreeing about what a reconcile would do.
+// rep is read only for its Action, used in the UnlistedLocal error message.
+func (r Runner) classifyProfile(name string, p config.Profile, id ident.Ident, relpath string, opts Options, rep *Report) (profilePlan, error) {
 	// Pre-flight: refuse if local content lies outside the declared subpaths, so a
 	// scoped push never silently skips local work. Runs before any mount/transfer;
 	// --force does not bypass it (this is data safety, not a lock override).
 	// A walk error (permissions, I/O, etc.) fails the operation closed — unlike
 	// status/Check, which swallow walk errors best-effort to report what it can.
 	if unlisted, err := sanity.UnlistedLocal(p); err != nil {
-		return nil, nil, err
+		return profilePlan{}, err
 	} else if len(unlisted) > 0 {
-		return nil, nil, fmt.Errorf(
+		return profilePlan{}, fmt.Errorf(
 			"refusing to %s %q: local content is outside the profile's subpaths and would not be synced (add it to subpaths or remove it):\n  %s",
 			rep.Action, name, strings.Join(unlisted, "\n  "))
 	}
@@ -36,26 +51,26 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 	localRoot := config.ExpandRoot(p.LocalRoot)
 
 	if info, err := os.Stat(remoteRoot); err != nil || !info.IsDir() {
-		return nil, nil, fmt.Errorf("remote root %s is not mounted", remoteRoot)
+		return profilePlan{}, fmt.Errorf("remote root %s is not mounted", remoteRoot)
 	}
 
 	m, exists, err := marker.Read(remoteRoot)
 	if err != nil {
-		return nil, nil, err
+		return profilePlan{}, err
 	}
 	if !exists {
-		return nil, nil, fmt.Errorf("profile %q is not checked out (no marker)", name)
+		return profilePlan{}, fmt.Errorf("profile %q is not checked out (no marker)", name)
 	}
 	if !m.OwnedBy(id.By, id.Host) && !opts.Force {
-		return nil, nil, fmt.Errorf("profile %q is checked out by %s on %s (not this machine)", name, m.CheckedOutBy, m.Host)
+		return profilePlan{}, fmt.Errorf("profile %q is checked out by %s on %s (not this machine)", name, m.CheckedOutBy, m.Host)
 	}
 
 	b, hasBase, err := baseline.Load(name)
 	if err != nil {
-		return nil, nil, err
+		return profilePlan{}, err
 	}
 	if !hasBase {
-		return nil, nil, fmt.Errorf("no local baseline for %q — re-checkout on this machine to establish one", name)
+		return profilePlan{}, fmt.Errorf("no local baseline for %q — re-checkout on this machine to establish one", name)
 	}
 
 	relpaths := b.Relpaths
@@ -65,8 +80,23 @@ func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Prof
 
 	plan, err := reconcile.PlanFor(b.Files, localRoot, remoteRoot, relpaths)
 	if err != nil {
+		return profilePlan{}, err
+	}
+	return profilePlan{marker: m, baseline: b, relpaths: relpaths, localRoot: localRoot, remoteRoot: remoteRoot, plan: plan}, nil
+}
+
+// reconcileProfile is the body of Sync: it classifies the profile via the shared
+// preflight, then (unless dry-run) applies the plan and refreshes the baseline.
+// It does NOT remove the marker. relpath is the scope.
+func (r Runner) reconcileProfile(ctx context.Context, name string, p config.Profile, id ident.Ident, relpath string, opts Options, rep *Report) (*marker.Marker, *baseline.Baseline, error) {
+	pf, err := r.classifyProfile(name, p, id, relpath, opts, rep)
+	if err != nil {
 		return nil, nil, err
 	}
+	m, b := pf.marker, pf.baseline
+	relpaths := pf.relpaths
+	localRoot, remoteRoot := pf.localRoot, pf.remoteRoot
+	plan := pf.plan
 	rep.Conflicts = plan.Conflicts
 
 	// Dry-run always exits clean: report the plan (and any would-be conflicts)

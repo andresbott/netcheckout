@@ -89,7 +89,9 @@ func printApplyEvent(w io.Writer, e reconcile.Event) {
 	_, _ = fmt.Fprintf(w, "  %-8s → %-6s  %s\n", verb, side, e.Path)
 }
 
-// printReconcileReport is shared by sync and checkin.
+// printReconcileReport renders a sync outcome: a conflict stop, a dry-run plan,
+// or the counts of applied changes. (checkin has its own printer — it no longer
+// reconciles.)
 func printReconcileReport(w io.Writer, name string, rep lifecycle.Report) {
 	if len(rep.Conflicts) > 0 {
 		_, _ = fmt.Fprintf(w, "%s: %d conflict(s) — nothing written:\n", name, len(rep.Conflicts))
@@ -99,9 +101,6 @@ func printReconcileReport(w io.Writer, name string, rep lifecycle.Report) {
 		return
 	}
 	verb := "reconciled"
-	if rep.Released {
-		verb = "checked in"
-	}
 	if rep.DryRun {
 		verb = "dry-run"
 	}

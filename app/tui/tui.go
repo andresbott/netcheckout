@@ -38,6 +38,16 @@ const (
 	subActions
 )
 
+// actPane selects which panel in the actions view (subActions) has keyboard
+// focus: the Actions menu (default) or the scrollable Activity panel. Tab
+// toggles between them; the focused panel is drawn with the accent border.
+type actPane int
+
+const (
+	paneActions actPane = iota
+	paneActivity
+)
+
 type model struct {
 	path         string
 	cfg          *config.Config
@@ -49,6 +59,7 @@ type model struct {
 	list         listModel
 	mode         mode
 	sub          mainSub
+	pane         actPane // which panel is focused while sub == subActions
 	form         formModel
 	settings     settingsModel
 	profile      profileModel
@@ -60,6 +71,16 @@ type model struct {
 	runner       lifecycle.Runner
 	actForce     bool
 	checkinClean bool // "delete local copy" checkbox in the check-in dialog
+	// cancel aborts the in-flight streaming action (Sync/Checkout/Check-in): its
+	// context feeds exec.CommandContext, so calling it kills the live rsync. It is
+	// nil for Status (a pure file walk with nothing to kill) and once an action
+	// finishes.
+	cancel context.CancelFunc
+	// actionSeq stamps each launched action; it is bumped on every launch and on
+	// cancel. A result message whose seq no longer matches is a stale straggler
+	// (from a canceled or superseded run) and is dropped, so it can't overwrite the
+	// "Canceled." state or a freshly started action.
+	actionSeq int
 }
 
 // Run loads the config at path and starts the interactive TUI.
@@ -97,6 +118,7 @@ func newModel(path string, cfg *config.Config) model {
 func (m model) withStartupSettings() model {
 	if m.cfg.Identity == "" {
 		m.settings = newSettings(m.cfg)
+		m.settings.mandatory = true
 		m.mode = modeSettings
 	}
 	return m
@@ -179,6 +201,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if res, ok := msg.(actionResultMsg); ok {
 		m.applyActionResult(res)
+		// A canceled or superseded action's terminal result is a straggler: skip the
+		// sanity/Contents refresh it would otherwise trigger (applyActionResult has
+		// already dropped its display).
+		if res.seq != m.actionSeq {
+			return m, nil
+		}
 		p := m.cfg.Profiles[res.name]
 		// Refresh the sanity mark since the marker changed.
 		cmds := []tea.Cmd{sanityCmd(res.name, p)}
@@ -190,7 +218,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if res.err == nil && !res.report.DryRun && m.sub == subActions && m.profile.name == res.name {
 			m.profile.scanning = true
 			m.profile.statErr = nil
-			cmds = append(cmds, localStatCmd(res.name, p))
+			cmds = append(cmds, localStatCmd(res.name, p, m.actionSeq))
 		}
 		return m, tea.Batch(cmds...)
 	}
@@ -277,8 +305,7 @@ func (m model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch key.String() {
 	case "esc":
-		m.mode = modeMain
-		return m, nil
+		return m.cancelSettings()
 	case "tab", "down":
 		return m, m.settings.focusNext()
 	case "shift+tab", "up":
@@ -293,8 +320,7 @@ func (m model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		if m.settings.focus == m.settings.cancelSlot() {
-			m.mode = modeMain
-			return m, nil
+			return m.cancelSettings()
 		}
 		// On an input or on Save: submit.
 		return m.submitSettings()
@@ -303,8 +329,7 @@ func (m model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case m.settings.saveSlot():
 			return m.submitSettings()
 		case m.settings.cancelSlot():
-			m.mode = modeMain
-			return m, nil
+			return m.cancelSettings()
 		}
 		// On an input: fall through to type the space.
 	}
@@ -313,11 +338,26 @@ func (m model) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// cancelSettings leaves the settings modal: it quits the app for the mandatory
+// first-run dialog (no valid config to return to), otherwise returns to the main
+// view discarding edits.
+func (m model) cancelSettings() (tea.Model, tea.Cmd) {
+	if m.settings.mandatory {
+		return m, tea.Quit
+	}
+	m.mode = modeMain
+	return m, nil
+}
+
 // submitSettings writes the edited client settings to disk. On failure it
 // restores the previous values so in-memory state never diverges from disk and
 // keeps the modal open with an error. On success it refreshes the header
 // identity and re-resolves m.id so later checkouts record the new identity.
 func (m model) submitSettings() (tea.Model, tea.Cmd) {
+	if err := m.settings.validate(); err != nil {
+		m.settings.err = err.Error()
+		return m, nil
+	}
 	prev := *m.cfg
 	m.settings.apply(m.cfg)
 	if err := config.Save(m.path, m.cfg); err != nil {
@@ -337,6 +377,7 @@ func (m model) submitSettings() (tea.Model, tea.Cmd) {
 func (m model) openProfile(name string) (tea.Model, tea.Cmd) {
 	m.profile = newProfileView(name)
 	m.sub = subActions
+	m.pane = paneActions // always open focused on the action list
 	// Refresh the sanity mark so action-row gating reflects the current on-disk
 	// checkout state rather than whatever was cached at startup.
 	return m, sanityCmd(name, m.cfg.Profiles[name])
@@ -347,16 +388,18 @@ func (m model) openProfile(name string) (tea.Model, tea.Cmd) {
 // has since left is ignored.
 type statusResultMsg struct {
 	name string
+	seq  int
 	st   status.ProfileStatus
 	err  error
 }
 
 // statusCmd runs status.Compute off the UI thread and delivers the outcome as a
-// statusResultMsg.
-func statusCmd(name string, p config.Profile) tea.Cmd {
+// statusResultMsg. seq is the launch stamp so a result abandoned by a cancel (or
+// a newer run) can be recognised and dropped in applyStatusResult.
+func statusCmd(name string, p config.Profile, seq int) tea.Cmd {
 	return func() tea.Msg {
 		st, err := status.Compute(name, p)
-		return statusResultMsg{name: name, st: st, err: err}
+		return statusResultMsg{name: name, seq: seq, st: st, err: err}
 	}
 }
 
@@ -364,8 +407,12 @@ func statusCmd(name string, p config.Profile) tea.Cmd {
 // result is ignored unless the actions view is still showing that same profile,
 // so a slow compute can never overwrite newer state.
 func (m *model) applyStatusResult(res statusResultMsg) {
-	if m.sub != subActions || m.profile.name != res.name {
-		return
+	if res.seq != m.actionSeq || m.sub != subActions || m.profile.name != res.name {
+		return // stale straggler (canceled or superseded), or a since-left profile
+	}
+	if m.cancel != nil { // no-op for Status (nil), but keeps the field hygienic
+		m.cancel()
+		m.cancel = nil
 	}
 	m.profile.checking = false
 	if res.err != nil {
@@ -382,16 +429,19 @@ func (m *model) applyStatusResult(res statusResultMsg) {
 // guarded by profile name so a stale result from a since-left profile is ignored.
 type localStatResultMsg struct {
 	name  string
+	seq   int
 	stats localstat.Stats
 	err   error
 }
 
 // localStatCmd runs localstat.Scan off the UI thread and delivers the outcome as
-// a localStatResultMsg. It runs alongside statusCmd on the Status action.
-func localStatCmd(name string, p config.Profile) tea.Cmd {
+// a localStatResultMsg. It runs alongside statusCmd on the Status action and
+// again after a mutating action to refresh the Contents summary. seq is the
+// launch stamp so an abandoned scan's result is dropped in applyLocalStatResult.
+func localStatCmd(name string, p config.Profile, seq int) tea.Cmd {
 	return func() tea.Msg {
 		stats, err := localstat.Scan(p)
-		return localStatResultMsg{name: name, stats: stats, err: err}
+		return localStatResultMsg{name: name, seq: seq, stats: stats, err: err}
 	}
 }
 
@@ -399,8 +449,8 @@ func localStatCmd(name string, p config.Profile) tea.Cmd {
 // ignored unless the actions view is still showing that same profile so a slow
 // scan can never overwrite newer state.
 func (m *model) applyLocalStatResult(res localStatResultMsg) {
-	if m.sub != subActions || m.profile.name != res.name {
-		return
+	if res.seq != m.actionSeq || m.sub != subActions || m.profile.name != res.name {
+		return // stale straggler (canceled or superseded), or a since-left profile
 	}
 	m.profile.scanning = false
 	if res.err != nil {
@@ -430,6 +480,7 @@ func sanityCmd(name string, p config.Profile) tea.Cmd {
 // by profile name so a stale result from a since-left profile is ignored.
 type actionResultMsg struct {
 	name   string
+	seq    int
 	report lifecycle.Report
 	err    error
 }
@@ -439,6 +490,7 @@ type actionResultMsg struct {
 // action streams on, so Update can re-arm waitForMsg to drain the next message.
 type syncEventMsg struct {
 	name  string
+	seq   int
 	event reconcile.Event
 	ch    chan tea.Msg
 }
@@ -453,10 +505,12 @@ func waitForMsg(ch chan tea.Msg) tea.Cmd {
 
 // checkoutCmd runs lifecycle.Runner.Checkout off the UI thread, streaming each
 // pulled file live as a syncEventMsg and finishing with an actionResultMsg —
-// the same shape as syncCmd/checkinCmd.
-func checkoutCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
-	return streamCmd(name, func(o lifecycle.Options) (lifecycle.Report, error) {
-		return r.Checkout(context.Background(), name, p, id, "", o)
+// the same shape as syncCmd/checkinCmd. ctx is the cancelable context whose
+// cancel kills the run; seq stamps the messages so a canceled run's stragglers
+// are dropped.
+func checkoutCmd(ctx context.Context, r lifecycle.Runner, id ident.Ident, name string, p config.Profile, seq int, opts lifecycle.Options) tea.Cmd {
+	return streamCmd(name, seq, func(o lifecycle.Options) (lifecycle.Report, error) {
+		return r.Checkout(ctx, name, p, id, "", o)
 	}, opts)
 }
 
@@ -464,12 +518,14 @@ func checkoutCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profi
 // background goroutine, streaming each applied change as a syncEventMsg on a
 // channel and finishing with a terminal actionResultMsg. It returns the
 // command that drains the first message; Update re-arms waitForMsg for the rest.
-func streamCmd(name string, run func(opts lifecycle.Options) (lifecycle.Report, error), opts lifecycle.Options) tea.Cmd {
+// seq stamps every emitted message so applySyncEvent/applyActionResult can drop
+// the stragglers of a canceled or superseded run.
+func streamCmd(name string, seq int, run func(opts lifecycle.Options) (lifecycle.Report, error), opts lifecycle.Options) tea.Cmd {
 	ch := make(chan tea.Msg)
-	opts.OnApply = func(e reconcile.Event) { ch <- syncEventMsg{name: name, event: e, ch: ch} }
+	opts.OnApply = func(e reconcile.Event) { ch <- syncEventMsg{name: name, seq: seq, event: e, ch: ch} }
 	go func() {
 		rep, err := run(opts)
-		ch <- actionResultMsg{name: name, report: rep, err: err}
+		ch <- actionResultMsg{name: name, seq: seq, report: rep, err: err}
 		close(ch)
 	}()
 	return waitForMsg(ch)
@@ -477,17 +533,17 @@ func streamCmd(name string, run func(opts lifecycle.Options) (lifecycle.Report, 
 
 // syncCmd runs lifecycle.Runner.Sync off the UI thread, streaming applied changes
 // live and finishing with an actionResultMsg.
-func syncCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
-	return streamCmd(name, func(o lifecycle.Options) (lifecycle.Report, error) {
-		return r.Sync(context.Background(), name, p, id, "", o)
+func syncCmd(ctx context.Context, r lifecycle.Runner, id ident.Ident, name string, p config.Profile, seq int, opts lifecycle.Options) tea.Cmd {
+	return streamCmd(name, seq, func(o lifecycle.Options) (lifecycle.Report, error) {
+		return r.Sync(ctx, name, p, id, "", o)
 	}, opts)
 }
 
 // checkinCmd runs lifecycle.Runner.Checkin off the UI thread, streaming applied
 // changes live and finishing with an actionResultMsg.
-func checkinCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profile, opts lifecycle.Options) tea.Cmd {
-	return streamCmd(name, func(o lifecycle.Options) (lifecycle.Report, error) {
-		return r.Checkin(context.Background(), name, p, id, o)
+func checkinCmd(ctx context.Context, r lifecycle.Runner, id ident.Ident, name string, p config.Profile, seq int, opts lifecycle.Options) tea.Cmd {
+	return streamCmd(name, seq, func(o lifecycle.Options) (lifecycle.Report, error) {
+		return r.Checkin(ctx, name, p, id, o)
 	}, opts)
 }
 
@@ -503,14 +559,23 @@ func checkinCmd(r lifecycle.Runner, id ident.Ident, name string, p config.Profil
 // event from a since-left profile is ignored (the channel is still drained by the
 // re-armed waitForMsg).
 func (m *model) applySyncEvent(res syncEventMsg) {
-	if m.sub != subActions || m.profile.name != res.name {
-		return
+	if res.seq != m.actionSeq || m.sub != subActions || m.profile.name != res.name {
+		return // stale straggler (canceled or superseded), or a since-left profile
 	}
 	m.profile.applied = append(m.profile.applied, res.event)
 	m.profile.statusScroll = m.statusMaxScroll()
 }
 
 func (m *model) applyActionResult(res actionResultMsg) {
+	if res.seq != m.actionSeq {
+		return // straggler from a canceled or superseded action
+	}
+	// The action finished on its own; call cancel to release the context's
+	// resources (the process has already exited, so this only frees the watcher).
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
 	if m.sub != subActions || m.profile.name != res.name {
 		return
 	}
@@ -526,38 +591,68 @@ func (m *model) applyActionResult(res actionResultMsg) {
 	}
 }
 
+// escProfile handles Esc in the profile actions view. While an action is in
+// flight it opens the cancel confirm rather than silently leaving the work
+// running in the background; otherwise it returns to the profile list.
+func (m model) escProfile() (tea.Model, tea.Cmd) {
+	if m.profile.acting || m.profile.checking {
+		m.confirmName = m.profile.name
+		m.confirmKind = confirmCancel
+		m.confirmFocus = confirmFocusCancel // safe default: reaching "Stop" needs a move
+		m.mode = modeConfirm
+		return m, nil
+	}
+	m.sub = subList
+	return m, nil
+}
+
 func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
 	}
 	actions := visibleActions(m.checks[m.profile.name])
+	// Keys handled the same in both panes: Tab toggles focus, f toggles force,
+	// and Esc leaves the profile for the list (from either pane).
 	switch key.String() {
 	case "esc":
-		m.sub = subList
+		return m.escProfile()
+	case "tab", "shift+tab":
+		if m.pane == paneActivity {
+			m.pane = paneActions
+		} else {
+			m.pane = paneActivity
+		}
 		return m, nil
+	case "f":
+		m.actForce = !m.actForce
+		return m, nil
+	}
+
+	// Activity pane: the arrow and page keys scroll the status viewport.
+	if m.pane == paneActivity {
+		switch key.String() {
+		case "up", "w":
+			m.scrollActivity(-1)
+		case "down", "s":
+			m.scrollActivity(1)
+		case "pgup":
+			_, ih := m.activityGeometry()
+			m.scrollActivity(-step(ih))
+		case "pgdown":
+			_, ih := m.activityGeometry()
+			m.scrollActivity(step(ih))
+		}
+		return m, nil
+	}
+
+	// Actions pane: the arrow keys move the action cursor; Enter runs it.
+	switch key.String() {
 	case "up", "w":
 		m.profile.moveUp()
 		return m, nil
 	case "down", "s":
 		m.profile.moveDown(len(actions))
-		return m, nil
-	case "f":
-		m.actForce = !m.actForce
-		return m, nil
-	case "pgup":
-		_, ih := m.activityGeometry()
-		m.profile.statusScroll -= step(ih)
-		if m.profile.statusScroll < 0 {
-			m.profile.statusScroll = 0
-		}
-		return m, nil
-	case "pgdown":
-		_, ih := m.activityGeometry()
-		m.profile.statusScroll += step(ih)
-		if max := m.statusMaxScroll(); m.profile.statusScroll > max {
-			m.profile.statusScroll = max
-		}
 		return m, nil
 	case "enter":
 		if m.profile.cursor >= len(actions) {
@@ -573,13 +668,19 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Status result isn't masked by it in renderStatus.
 			m.profile.actionReport = nil
 			m.profile.actionErr = nil
+			m.profile.canceled = false
 			m.profile.scanning = true
 			m.profile.statErr = nil
 			m.profile.fileStats = nil
+			// Status is a pure file walk with no process to kill, so there is nothing
+			// to cancel; a bumped actionSeq is enough to abandon its result on Esc.
+			m.cancel = nil
+			m.actionSeq++
+			seq := m.actionSeq
 			p := m.cfg.Profiles[m.profile.name]
 			return m, tea.Batch(
-				statusCmd(m.profile.name, p),
-				localStatCmd(m.profile.name, p),
+				statusCmd(m.profile.name, p, seq),
+				localStatCmd(m.profile.name, p, seq),
 			)
 		case "Checkout":
 			m.confirmName = m.profile.name
@@ -591,9 +692,13 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.profile.actionErr = nil
 			m.profile.actionReport = nil
 			m.profile.applied = nil
+			m.profile.canceled = false
 			m.profile.statusScroll = 0
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancel = cancel
+			m.actionSeq++
 			opts := lifecycle.Options{Force: m.actForce}
-			return m, syncCmd(m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], opts)
+			return m, syncCmd(ctx, m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], m.actionSeq, opts)
 		case "Check-in":
 			m.confirmName = m.profile.name
 			m.confirmKind = confirmCheckin
@@ -771,21 +876,24 @@ func (m model) mainView(dim bool) string {
 		detailsBody += contentsBlock(m.profile.fileStats, m.profile.scanning, m.profile.statErr)
 	}
 
-	top := titledBox(topTitle, topBody, leftW, topH, !dim)
+	// The top box is focused except when the activity pane holds focus; the
+	// Activity box is focused only then. Both go unfocused behind a modal (dim).
+	topFocused := !dim && (m.sub != subActions || m.pane == paneActions)
+	top := titledBox(topTitle, topBody, leftW, topH, topFocused)
 	details := titledBox("Details", detailsBody, leftW, detailsH, false)
 	left := lipgloss.JoinVertical(lipgloss.Left, top, details)
 	activity := renderActivity()
-	overflow := false
 	if m.sub == subActions {
 		activity = renderStatus(m.profile, rightW-2)
-		activity, overflow = scrollWindow(activity, m.profile.statusScroll, bodyH-2)
+		activity, _ = scrollWindow(activity, m.profile.statusScroll, bodyH-2)
 	}
-	right := titledBox("Activity", activity, rightW, bodyH, false)
+	activityFocused := !dim && m.sub == subActions && m.pane == paneActivity
+	right := titledBox("Activity", activity, rightW, bodyH, activityFocused)
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 
 	footer := renderFooter(w)
 	if m.sub == subActions {
-		footer = renderProfileFooter(w, m.actForce, overflow)
+		footer = renderProfileFooter(w, m.actForce, m.pane == paneActivity)
 	}
 	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + footer
 	if m.err != nil {
@@ -849,6 +957,20 @@ func step(height int) int {
 		return 1
 	}
 	return height
+}
+
+// scrollActivity moves the Activity viewport by delta lines (negative scrolls
+// up), clamped to [0, statusMaxScroll]. Shared by the arrow-key line scroll and
+// the PgUp/PgDn page scroll in updateProfile's activity pane.
+func (m *model) scrollActivity(delta int) {
+	s := m.profile.statusScroll + delta
+	if max := m.statusMaxScroll(); s > max {
+		s = max
+	}
+	if s < 0 {
+		s = 0
+	}
+	m.profile.statusScroll = s
 }
 
 // statusMaxScroll is the largest valid statusScroll for the current Activity

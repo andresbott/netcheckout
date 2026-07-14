@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/internal/ident"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -50,7 +51,8 @@ func TestSettingsSavePersistsIdentity(t *testing.T) {
 	}
 	m := newModel(p, cfg)
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("alice@laptop")})
+	// The input opens pre-filled with the default; replace it with a custom value.
+	m.settings.inputs[0].SetValue("alice@laptop")
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	if m.mode != modeMain {
@@ -79,7 +81,7 @@ func TestSettingsSaveViaButton(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	m := newModel(p, testConfig())
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
-	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("bob@nas")})
+	m.settings.inputs[0].SetValue("bob@nas")
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab}) // input -> Save
 	if m.settings.focus != m.settings.saveSlot() {
 		t.Fatalf("tab from the input should focus Save, got %d", m.settings.focus)
@@ -165,5 +167,118 @@ func TestSettingsViewShowsTitleAndField(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Errorf("settings view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+// TestSettingsPrefillsDefaultIdentity: an unset identity opens the modal with the
+// input pre-populated with the resolved $USER@$HOSTNAME default (not blank), so a
+// single Save finalizes a valid config.
+func TestSettingsPrefillsDefaultIdentity(t *testing.T) {
+	cfg := &config.Config{}
+	want, err := ident.Resolve(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSettings(cfg)
+	if got := s.inputs[0].Value(); got != want.By {
+		t.Errorf("Identity input = %q, want prefilled default %q", got, want.By)
+	}
+	if s.inputs[0].Value() == "" {
+		t.Error("prefilled identity must not be empty")
+	}
+}
+
+// TestSettingsSaveRejectsBlankIdentity: clearing the Identity and pressing Save is
+// rejected with an inline error, keeps the modal open, and writes nothing.
+func TestSettingsSaveRejectsBlankIdentity(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	m := newModel(p, testConfig())
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	m.settings.inputs[0].SetValue("")
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.mode != modeSettings {
+		t.Fatalf("blank Save should keep the modal open, got mode %d", m.mode)
+	}
+	if m.settings.err == "" {
+		t.Error("expected an inline error after a blank-identity Save")
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Errorf("blank Save must not write a config file (stat err = %v)", err)
+	}
+}
+
+// TestStartupSettingsEscQuits: the mandatory first-run dialog quits the app on esc
+// rather than dropping into an unconfigured main view.
+func TestStartupSettingsEscQuits(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig()).withStartupSettings()
+	if m.mode != modeSettings || !m.settings.mandatory {
+		t.Fatalf("want a mandatory settings modal, mode=%d mandatory=%v", m.mode, m.settings.mandatory)
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("expected a command from esc on the mandatory modal")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected QuitMsg from esc on the mandatory modal")
+	}
+}
+
+// TestStartupSettingsQuitButtonQuits: activating the Quit button (the mandatory
+// dialog's relabelled Cancel) also exits the app.
+func TestStartupSettingsQuitButtonQuits(t *testing.T) {
+	m := newModel("/tmp/x.yaml", testConfig()).withStartupSettings()
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab}) // input -> Save
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyTab}) // Save -> Quit
+	if m.settings.focus != m.settings.cancelSlot() {
+		t.Fatalf("want focus on the quit slot, got %d", m.settings.focus)
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a command from the Quit button")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatal("expected QuitMsg from the Quit button")
+	}
+}
+
+// TestStartupSettingsSaveClosesAndPersists: accepting the prefilled default on the
+// mandatory dialog writes a concrete identity and lands on the main view, so a
+// later launch no longer re-prompts.
+func TestStartupSettingsSaveClosesAndPersists(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	m := newModel(p, testConfig()).withStartupSettings()
+	if m.mode != modeSettings {
+		t.Fatalf("want mandatory settings modal, got mode %d", m.mode)
+	}
+	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // accept prefilled default
+
+	if m.mode != modeMain {
+		t.Fatalf("accepting the default should close to main, got mode %d", m.mode)
+	}
+	if m.cfg.Identity == "" {
+		t.Error("save must persist a concrete (non-empty) identity")
+	}
+	saved, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Identity != m.cfg.Identity || saved.Identity == "" {
+		t.Errorf("persisted identity = %q, want non-empty and equal to in-memory %q", saved.Identity, m.cfg.Identity)
+	}
+}
+
+// TestSettingsMandatoryViewShowsQuit: the mandatory dialog labels its exit button
+// "Quit" instead of "Cancel".
+func TestSettingsMandatoryViewShowsQuit(t *testing.T) {
+	s := newSettings(&config.Config{})
+	s.mandatory = true
+	s.setWidth(80)
+	view := s.View()
+	if !strings.Contains(view, "[ Quit ]") {
+		t.Errorf("mandatory view should show a Quit button:\n%s", view)
+	}
+	if strings.Contains(view, "[ Cancel ]") {
+		t.Errorf("mandatory view should not show Cancel:\n%s", view)
 	}
 }

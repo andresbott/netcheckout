@@ -46,12 +46,16 @@ func TestScenarioA(t *testing.T) {
 		t.FailNow()
 	}
 
-	if !t.Run("checkout copies remote to local and writes a marker", func(t *testing.T) {
+	if !t.Run("checkout locks the profile without copying files", func(t *testing.T) {
 		_, _, exitCode := runCLIEnv(t, configPath, env, "checkout", "e2e")
 		if exitCode != 0 {
 			t.Fatalf("checkout exit = %d, want 0", exitCode)
 		}
-		assertSnapshotsEqual(t, remoteSnapshot, snapshot(t, local))
+		// Checkout only writes the marker; the local working copy stays empty
+		// (pulling the tree down is sync's job).
+		if got := snapshot(t, local); len(got) != 0 {
+			t.Fatalf("checkout must not copy files; local has %d: %#v", len(got), got)
+		}
 		if _, err := os.Stat(markerPath(remote)); err != nil {
 			t.Fatalf("expected checkout marker at %s: %v", markerPath(remote), err)
 		}
@@ -66,6 +70,36 @@ func TestScenarioA(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "already checked out") {
 			t.Fatalf("checkout output = %q, want it to report the profile is already checked out", stdout)
+		}
+	}) {
+		t.FailNow()
+	}
+
+	if !t.Run("checkin refuses while the first pull is still pending", func(t *testing.T) {
+		// The remote tree is not local yet, so the profile is not in sync: checkin
+		// must refuse and point at sync, leaving the marker in place.
+		stdout, _, exitCode := runCLIEnv(t, configPath, env, "checkin", "e2e")
+		if exitCode == 0 {
+			t.Fatal("checkin before the first sync should fail, got exit 0")
+		}
+		if !strings.Contains(stdout, "sync") {
+			t.Fatalf("checkin output = %q, want it to point at sync", stdout)
+		}
+		if _, err := os.Stat(markerPath(remote)); err != nil {
+			t.Fatalf("a refused checkin must keep the marker: %v", err)
+		}
+	}) {
+		t.FailNow()
+	}
+
+	if !t.Run("sync pulls the remote down to local", func(t *testing.T) {
+		_, _, exitCode := runCLIEnv(t, configPath, env, "sync", "e2e")
+		if exitCode != 0 {
+			t.Fatalf("sync exit = %d, want 0", exitCode)
+		}
+		assertSnapshotsEqual(t, remoteSnapshot, snapshot(t, local))
+		if _, err := os.Stat(markerPath(remote)); err != nil {
+			t.Fatalf("expected marker to remain after sync at %s: %v", markerPath(remote), err)
 		}
 	}) {
 		t.FailNow()
@@ -111,11 +145,12 @@ func TestScenarioA(t *testing.T) {
 		t.FailNow()
 	}
 
-	t.Run("checkin propagates changes and clears the marker", func(t *testing.T) {
+	t.Run("checkin verifies in sync and releases the marker", func(t *testing.T) {
 		_, _, exitCode := runCLIEnv(t, configPath, env, "checkin", "e2e")
 		if exitCode != 0 {
 			t.Fatalf("checkin exit = %d, want 0", exitCode)
 		}
+		// checkin moves no data — the prior sync already made local and remote match.
 		assertSnapshotsEqual(t, editedSnapshot, snapshot(t, remote))
 		if _, err := os.Stat(markerPath(remote)); !os.IsNotExist(err) {
 			t.Fatalf("expected marker to be removed after checkin, stat err = %v", err)

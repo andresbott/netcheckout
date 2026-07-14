@@ -14,16 +14,18 @@ import (
 // edit: a display label and the getter/setter pair mapping it to a Config. This
 // slice is the single place to add future client-level settings.
 type settingsField struct {
-	label string
-	get   func(*config.Config) string
-	set   func(*config.Config, string)
+	label    string
+	get      func(*config.Config) string
+	set      func(*config.Config, string)
+	validate func(string) error // optional; nil means no validation
 }
 
 var settingsFields = []settingsField{
 	{
-		label: "Identity",
-		get:   func(c *config.Config) string { return c.Identity },
-		set:   func(c *config.Config, v string) { c.Identity = v },
+		label:    "Identity",
+		get:      func(c *config.Config) string { return c.Identity },
+		set:      func(c *config.Config, v string) { c.Identity = v },
+		validate: config.ValidateIdentity,
 	},
 }
 
@@ -31,10 +33,11 @@ var settingsFields = []settingsField{
 // settingsField, followed by the Save and Cancel action buttons. focus indexes
 // the inputs first, then Save (saveSlot), then Cancel (cancelSlot).
 type settingsModel struct {
-	inputs []textinput.Model
-	focus  int
-	err    string
-	width  int // terminal width last passed to setWidth
+	inputs    []textinput.Model
+	focus     int
+	err       string
+	width     int  // terminal width last passed to setWidth
+	mandatory bool // opened as the blocking first-run dialog; Cancel/Esc quits the app
 }
 
 func (s settingsModel) saveSlot() int   { return len(s.inputs) }
@@ -56,12 +59,16 @@ func newSettings(cfg *config.Config) settingsModel {
 		// fills gap-free.
 		in.Prompt = ""
 		in.Placeholder = ""
-		in.SetValue(f.get(cfg))
+		val := f.get(cfg)
 		if f.label == "Identity" {
 			if id, err := ident.Resolve(cfg); err == nil {
 				in.Placeholder = id.By
+				if strings.TrimSpace(val) == "" {
+					val = id.By // prefill resolved default so first-run Save is valid
+				}
 			}
 		}
+		in.SetValue(val)
 		inputs[i] = in
 	}
 	s := settingsModel{inputs: inputs}
@@ -135,6 +142,21 @@ func (s settingsModel) apply(cfg *config.Config) {
 	}
 }
 
+// validate runs each field's optional validator against its trimmed input value,
+// returning the first error. It gates submitSettings so an invalid config (e.g. a
+// blank Identity) is never written to disk.
+func (s settingsModel) validate() error {
+	for i, f := range settingsFields {
+		if f.validate == nil {
+			continue
+		}
+		if err := f.validate(strings.TrimSpace(s.inputs[i].Value())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // update forwards a message to the focused input (no-op on the buttons, which
 // don't consume keystrokes).
 func (s settingsModel) update(msg tea.Msg) (settingsModel, tea.Cmd) {
@@ -176,11 +198,16 @@ func (s settingsModel) View() string {
 		content.WriteString(s.underline(i))
 	}
 
-	// Centered Save / Cancel action row.
+	// Centered Save / Cancel action row. The second button (and the esc hint) read
+	// "Quit" for the mandatory first-run dialog, where Cancel exits the app.
+	cancelLabel := "Cancel"
+	if s.mandatory {
+		cancelLabel = "Quit"
+	}
 	content.WriteString("\n\n")
 	actions := lipgloss.JoinHorizontal(lipgloss.Top,
 		confirmButton("Save", s.focus == s.saveSlot()), "   ",
-		confirmButton("Cancel", s.focus == s.cancelSlot()))
+		confirmButton(cancelLabel, s.focus == s.cancelSlot()))
 	content.WriteString(lipgloss.NewStyle().Width(s.modalWidth() - 4).Align(lipgloss.Center).Render(actions))
 
 	if s.err != "" {
@@ -190,7 +217,7 @@ func (s settingsModel) View() string {
 
 	content.WriteString("\n\n")
 	sep := helpTextStyle.Render(" · ")
-	content.WriteString(hint("tab", "Move") + sep + hint("enter/space", "Activate") + sep + hint("esc", "Cancel"))
+	content.WriteString(hint("tab", "Move") + sep + hint("enter/space", "Activate") + sep + hint("esc", cancelLabel))
 
 	body := lipgloss.NewStyle().Padding(0, 1).Render(content.String())
 	return titledBox("Client settings", body, s.modalWidth(), lipgloss.Height(body)+2, true)

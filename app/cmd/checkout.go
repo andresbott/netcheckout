@@ -9,7 +9,6 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
-	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/spf13/cobra"
 )
@@ -19,10 +18,10 @@ func newCheckoutCmd(cfgPath *string) *cobra.Command {
 }
 
 func newCheckoutCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command {
-	var force, dryRun, verbose bool
+	var force, dryRun bool
 	cmd := &cobra.Command{
 		Use:   "checkout <profile> [relpath]",
-		Short: "pull a profile's remote folder to local and lock it",
+		Short: "lock a profile's remote root (files are copied by sync)",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolvePath(*cfgPath)
@@ -42,22 +41,12 @@ func newCheckoutCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Comman
 			if err != nil {
 				return err
 			}
-			runner := r
-			if verbose {
-				if s, ok := runner.Syncer.(*rsync.Syncer); ok {
-					s.Output = cmd.ErrOrStderr()
-				}
-			}
 			rel := ""
 			if len(args) == 2 {
 				rel = args[1]
 			}
 			opts := lifecycle.Options{Force: force, DryRun: dryRun}
-			if !dryRun {
-				out := cmd.OutOrStdout()
-				opts.OnApply = func(e reconcile.Event) { printApplyEvent(out, e) }
-			}
-			rep, err := runner.Checkout(context.Background(), name, p, id, rel, opts)
+			rep, err := r.Checkout(context.Background(), name, p, id, rel, opts)
 			if err != nil {
 				return err
 			}
@@ -66,18 +55,14 @@ func newCheckoutCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Comman
 		},
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "override an existing lock held by someone else")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the plan without transferring or writing a marker")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream rsync output")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "run the checks without writing a marker")
 	return cmd
 }
 
 func printCheckoutReport(w io.Writer, name string, rep lifecycle.Report) {
 	if rep.DryRun {
-		_, _ = fmt.Fprintf(w, "%s: dry-run — would pull %d items and write a marker\n", name, len(rep.Pulled))
-		for _, p := range rep.Pulled {
-			_, _ = fmt.Fprintf(w, "  + %s\n", p)
-		}
+		_, _ = fmt.Fprintf(w, "%s: dry-run — would write a marker (lock only)\n", name)
 		return
 	}
-	_, _ = fmt.Fprintf(w, "%s: checked out (%d items pulled)\n", name, len(rep.Pulled))
+	_, _ = fmt.Fprintf(w, "%s: checked out (locked; run 'netcheckout sync %s' to pull files)\n", name, name)
 }

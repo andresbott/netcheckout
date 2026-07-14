@@ -41,6 +41,11 @@ func TestSyncDisambiguatesDeleteVsAdd(t *testing.T) {
 	if _, _, code := runCLIEnv(t, cfg, env, "checkout", "e2e"); code != 0 {
 		t.Fatalf("checkout exit %d", code)
 	}
+	// Pull the remote down so from-checkout.dat exists locally and is recorded in
+	// the baseline (checkout copies nothing on its own).
+	if _, _, code := runCLIEnv(t, cfg, env, "sync", "e2e"); code != 0 {
+		t.Fatalf("initial sync exit %d", code)
+	}
 	// (a) delete a checked-out file locally.
 	if err := os.Remove(filepath.Join(local, "from-checkout.dat")); err != nil {
 		t.Fatal(err)
