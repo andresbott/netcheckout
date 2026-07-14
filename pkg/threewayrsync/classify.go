@@ -27,7 +27,7 @@ type Plan struct {
 // path is in base and present on that side. converged is true when the path is present on
 // both sides with identical state (size+mtime): two sides that already agree are never a
 // conflict, which is what makes a canceled sync safe to resume.
-func classifyPath(inBase, localPresent, localChanged, remotePresent, remoteChanged, converged bool) action {
+func classifyPath(inBase, localPresent, localChanged, remotePresent, remoteChanged, converged bool) action { //nolint:gocyclo // exhaustive three-way decision table; branch count is intrinsic to the (base × present × changed) matrix and is fully covered by TestClassifyPathTable.
 	if localPresent && remotePresent && converged {
 		return actNoop
 	}

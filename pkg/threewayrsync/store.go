@@ -22,7 +22,7 @@ type FileStore struct {
 
 // LoadBase reads the manifest. A missing file is (nil, false, nil).
 func (f FileStore) LoadBase() (Manifest, bool, error) {
-	data, err := os.ReadFile(f.Path) //nolint:gosec // G304: path is caller-supplied application state, not attacker-controlled input.
+	data, err := os.ReadFile(f.Path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
