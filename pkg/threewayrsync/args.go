@@ -6,11 +6,15 @@ import (
 	"strings"
 )
 
+// partialDir holds rsync's interrupted partial transfers; it is excluded from enumeration
+// and transfer so leftover partials from a canceled run are never mistaken for real files.
+const partialDir = ".rsync-partial"
+
 // buildListArgs assembles the rsync argument list for enumerating src via a dry-run
 // itemize against an empty destination. --out-format prints "%i %l %M %n" (itemize flags,
 // size, mtime, path) per entry. emptyDest must be an existing empty directory.
 func buildListArgs(src Endpoint, emptyDest string, exclude []string) []string {
-	args := []string{"--recursive", "--links", "--dry-run", "--itemize-changes", "--out-format=%i %l %M %n"}
+	args := []string{"--recursive", "--links", "--dry-run", "--itemize-changes", "--out-format=%i %l %M %n", "--exclude=" + partialDir}
 	for _, ex := range exclude {
 		args = append(args, "--exclude="+ex)
 	}
@@ -27,7 +31,7 @@ func buildListArgs(src Endpoint, emptyDest string, exclude []string) []string {
 // --partial lets a canceled transfer resume; --times equalizes mtime so a re-listing sees
 // the two sides as equal. At most one of src/dst is ssh (validated earlier).
 func buildTransferArgs(src, dst Endpoint, checksum bool, exclude []string) []string {
-	args := []string{"--recursive", "--links", "--times", "--itemize-changes", "--partial"}
+	args := []string{"--recursive", "--links", "--times", "--itemize-changes", "--partial-dir=" + partialDir, "--exclude=" + partialDir}
 	if checksum {
 		args = append(args, "--checksum")
 	}

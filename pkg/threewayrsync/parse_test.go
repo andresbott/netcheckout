@@ -36,7 +36,7 @@ func TestParseListLineSkipsChatterAndDirs(t *testing.T) {
 		"sending incremental file list",
 		"",
 		"cd+++++++++ 4096 2026/07/14-09:15:00 sub", // directory (2nd flag 'd')
-		".d..t...... 4096 2026/07/14-09:15:00 ./",   // root
+		".d..t...... 4096 2026/07/14-09:15:00 ./",  // root
 	} {
 		if _, _, ok := parseListLine(line); ok {
 			t.Errorf("line should be skipped: %q", line)

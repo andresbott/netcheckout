@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // ConflictError reports that some paths changed on both sides while the policy was Abort.
@@ -43,12 +44,28 @@ func (s *Syncer) Sync(ctx context.Context, local, remote Endpoint, opts Options)
 	case Skip:
 		unresolved = plan.Conflicts
 	case PreferLocal:
-		push = append(push, plan.Conflicts...)
+		// Local wins: push local content; where local deleted the path, honor the deletion
+		// by removing it on the remote (a push would no-op and resurrect it next run).
+		for _, p := range plan.Conflicts {
+			if _, ok := localM[p]; ok {
+				push = append(push, p)
+			} else {
+				plan.RemoteDeletes = append(plan.RemoteDeletes, p)
+			}
+		}
 	case PreferRemote:
-		pull = append(pull, plan.Conflicts...)
+		for _, p := range plan.Conflicts {
+			if _, ok := remoteM[p]; ok {
+				pull = append(pull, p)
+			} else {
+				plan.LocalDeletes = append(plan.LocalDeletes, p)
+			}
+		}
 	}
 	sort.Strings(pull)
 	sort.Strings(push)
+	sort.Strings(plan.RemoteDeletes)
+	sort.Strings(plan.LocalDeletes)
 
 	var applied Plan
 	if len(pull) > 0 {
@@ -123,13 +140,22 @@ func (s *Syncer) deleteAll(ctx context.Context, e Endpoint, paths []string) erro
 	args := sshCmdArgs(e.SSH)
 	args = append(args, "rm", "-f", "--")
 	for _, rel := range paths {
-		args = append(args, e.Path+"/"+rel)
+		args = append(args, shellQuote(e.Path+"/"+rel))
 	}
 	res, err := s.runner()(ctx, "ssh", args, nil)
 	if err != nil {
 		return &Error{Op: "delete", Args: args, Stderr: res.stderr, ExitCode: res.exitCode, Err: err}
 	}
 	return nil
+}
+
+// shellQuote single-quotes s for safe interpretation by the remote shell that ssh runs
+// the command through: ssh concatenates its command arguments with spaces and the remote
+// login shell re-parses the result, so unquoted paths with spaces or metacharacters are a
+// correctness and injection hazard. An embedded single quote is escaped the standard
+// POSIX way: close the quote, add an escaped quote, reopen.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // mergedBase derives the new base after a successful apply. It starts from the local

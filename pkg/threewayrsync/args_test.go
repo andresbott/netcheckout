@@ -8,7 +8,7 @@ import (
 
 func TestBuildListArgsLocal(t *testing.T) {
 	got := buildListArgs(Endpoint{Path: "/data"}, "/tmp/empty", nil)
-	for _, want := range []string{"--recursive", "--dry-run", "--itemize-changes", "--out-format=%i %l %M %n"} {
+	for _, want := range []string{"--recursive", "--dry-run", "--itemize-changes", "--out-format=%i %l %M %n", "--exclude=.rsync-partial"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("list args missing %q: %v", want, got)
 		}
@@ -30,7 +30,7 @@ func TestBuildListArgsSSHAddsRsh(t *testing.T) {
 
 func TestBuildTransferArgsHasPartialAndFiles(t *testing.T) {
 	got := buildTransferArgs(Endpoint{Path: "/src"}, Endpoint{Path: "/dst"}, false, nil)
-	for _, want := range []string{"--recursive", "--links", "--times", "--itemize-changes", "--partial"} {
+	for _, want := range []string{"--recursive", "--links", "--times", "--itemize-changes", "--partial-dir=.rsync-partial", "--exclude=.rsync-partial"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("transfer args missing %q: %v", want, got)
 		}

@@ -20,8 +20,8 @@ const (
 
 // Options control a single sync.
 type Options struct {
-	Checksum bool        // pass rsync --checksum on transfers (content-accurate transfers)
-	Exclude  []string    // rsync --exclude patterns
+	Checksum bool     // pass rsync --checksum on transfers (content-accurate transfers)
+	Exclude  []string // rsync --exclude patterns
 	Conflict ConflictPolicy
 	OnEvent  func(Event) // per-path progress; runs on the sync goroutine — must not block
 }
