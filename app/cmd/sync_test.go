@@ -2,91 +2,69 @@ package cmd
 
 import (
 	"bytes"
-	"context"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/andresbott/netcheckout/internal/baseline"
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
 	"github.com/andresbott/netcheckout/internal/marker"
-	"github.com/andresbott/netcheckout/internal/rsync"
 )
 
-// cmdCopySyncer copies listed files between roots (like reconcile's fake).
-type cmdCopySyncer struct{}
-
-func (cmdCopySyncer) Sync(_ context.Context, j rsync.Job) (rsync.Result, error) {
-	src, dst := j.Remote.Path, j.Local.Path
-	if j.Direction == rsync.Push {
-		src, dst = j.Local.Path, j.Remote.Path
+func requireRsync(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not on PATH")
 	}
-	for _, f := range j.Files {
-		data, err := os.ReadFile(filepath.Join(src, f))
-		if err != nil {
-			return rsync.Result{}, err
-		}
-		_ = os.MkdirAll(filepath.Dir(filepath.Join(dst, f)), 0o755)
-		ct := rsync.Created
-		if _, err := os.Stat(filepath.Join(dst, f)); err == nil {
-			ct = rsync.Modified
-		}
-		_ = os.WriteFile(filepath.Join(dst, f), data, 0o644)
-		if j.OnChange != nil {
-			j.OnChange(rsync.Change{Path: f, Type: ct})
-		}
-	}
-	return rsync.Result{}, nil
 }
-func (cmdCopySyncer) Diff(context.Context, rsync.Job) (rsync.Diff, error) { return rsync.Diff{}, nil }
 
+// heldCmdFixture builds a checked-out, already-synced profile by driving the
+// real checkout and sync commands, and returns the config path and remote root.
 func heldCmdFixture(t *testing.T) (cfgPath, remote string) {
 	t.Helper()
+	requireRsync(t)
 	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	root := t.TempDir()
 	local := filepath.Join(root, "local")
 	remote = filepath.Join(root, "remote")
-	_ = os.MkdirAll(local, 0o755)
 	_ = os.MkdirAll(remote, 0o755)
-	_ = os.WriteFile(filepath.Join(local, "keep.txt"), []byte("base"), 0o644)
 	_ = os.WriteFile(filepath.Join(remote, "keep.txt"), []byte("base"), 0o644)
-	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: hostIdentity(t), Host: hostName(t), Profile: "work", Relpaths: []string{"."}})
-	files, _ := baseline.Snapshot(local, []string{"."})
-	_ = baseline.Save(&baseline.Baseline{Profile: "work", Relpaths: []string{"."}, Files: files})
 	cfgPath = writeStatusTestConfig(t, map[string]config.Profile{"work": {LocalRoot: local, RemoteRoot: remote}})
-	return cfgPath, remote
-}
 
-func hostName(t *testing.T) string { t.Helper(); h, _ := os.Hostname(); return h }
-func hostIdentity(t *testing.T) string {
-	t.Helper()
-	// config has no identity, so ident.Resolve yields $USER@$HOSTNAME.
-	u := os.Getenv("USER")
-	h, _ := os.Hostname()
-	if u == "" {
-		return h
+	co := newCheckoutCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
+	co.SetOut(&bytes.Buffer{})
+	co.SetArgs([]string{"work"})
+	if err := co.Execute(); err != nil {
+		t.Fatalf("fixture checkout: %v", err)
 	}
-	return u + "@" + h
+	sc := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
+	sc.SetOut(&bytes.Buffer{})
+	sc.SetArgs([]string{"work"})
+	if err := sc.Execute(); err != nil {
+		t.Fatalf("fixture first sync: %v", err)
+	}
+	return cfgPath, remote
 }
 
 func TestSyncCommandPushesLocalEdit(t *testing.T) {
 	cfgPath, remote := heldCmdFixture(t)
-	// Edit locally.
+	// Edit locally (different size => detected by the quick-check).
 	cfg, _ := config.Load(cfgPath)
 	lroot := cfg.Profiles["work"].LocalRoot
-	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("EDITED"), 0o644)
+	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("EDITED-LONGER"), 0o644)
 
-	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{Syncer: cmdCopySyncer{}, ToolVersion: "test"})
+	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"work"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := os.ReadFile(filepath.Join(remote, "keep.txt")); string(got) != "EDITED" {
-		t.Errorf("remote keep.txt = %q, want EDITED", got)
+	if got, _ := os.ReadFile(filepath.Join(remote, "keep.txt")); string(got) != "EDITED-LONGER" {
+		t.Errorf("remote keep.txt = %q, want EDITED-LONGER", got)
 	}
 	if _, ok, _ := marker.Read(remote); !ok {
 		t.Error("sync must leave the marker in place")
@@ -97,9 +75,9 @@ func TestSyncCommandPrintsProgressiveChanges(t *testing.T) {
 	cfgPath, _ := heldCmdFixture(t)
 	cfg, _ := config.Load(cfgPath)
 	lroot := cfg.Profiles["work"].LocalRoot
-	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("EDITED"), 0o644)
+	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("EDITED-LONGER"), 0o644)
 
-	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{Syncer: cmdCopySyncer{}, ToolVersion: "test"})
+	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"work"})
@@ -120,9 +98,9 @@ func TestSyncDryRunPrintsNoChangeLines(t *testing.T) {
 	cfgPath, _ := heldCmdFixture(t)
 	cfg, _ := config.Load(cfgPath)
 	lroot := cfg.Profiles["work"].LocalRoot
-	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("EDITED"), 0o644)
+	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("EDITED-LONGER"), 0o644)
 
-	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{Syncer: cmdCopySyncer{}, ToolVersion: "test"})
+	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"work", "--dry-run"})
@@ -131,6 +109,66 @@ func TestSyncDryRunPrintsNoChangeLines(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "→") {
 		t.Errorf("dry run must not stream applied changes, got:\n%s", buf.String())
+	}
+}
+
+func TestSyncCommandConflictListsPaths(t *testing.T) {
+	cfgPath, remote := heldCmdFixture(t)
+	cfg, _ := config.Load(cfgPath)
+	lroot := cfg.Profiles["work"].LocalRoot
+	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("local-version"), 0o644)
+	_ = os.WriteFile(filepath.Join(remote, "keep.txt"), []byte("R"), 0o644)
+
+	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"work"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("a conflict must exit non-zero")
+	}
+	if out := buf.String(); !strings.Contains(out, "conflict") || !strings.Contains(out, "keep.txt") {
+		t.Errorf("want the conflicting path listed, got:\n%s", out)
+	}
+}
+
+// A mass deletion (here: 12 of 13 synced files removed locally) refuses with a
+// message naming --allow-deletes, and re-running with the flag propagates it.
+func TestSyncCommandAllowDeletesFlag(t *testing.T) {
+	cfgPath, remote := heldCmdFixture(t)
+	cfg, _ := config.Load(cfgPath)
+	lroot := cfg.Profiles["work"].LocalRoot
+	// Grow the tree past the guard's absolute floor (10), then mass-delete.
+	for i := 0; i < 12; i++ {
+		name := fmt.Sprintf("bulk%02d.txt", i)
+		_ = os.WriteFile(filepath.Join(lroot, name), []byte("x"), 0o644)
+	}
+	sc := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
+	sc.SetOut(&bytes.Buffer{})
+	sc.SetArgs([]string{"work"})
+	if err := sc.Execute(); err != nil {
+		t.Fatalf("grow sync: %v", err)
+	}
+	for i := 0; i < 12; i++ {
+		_ = os.Remove(filepath.Join(lroot, fmt.Sprintf("bulk%02d.txt", i)))
+	}
+
+	cmd := newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"work"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--allow-deletes") {
+		t.Fatalf("plain sync must refuse and name --allow-deletes, got %v", err)
+	}
+
+	cmd = newSyncCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"work", "--allow-deletes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sync --allow-deletes: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(remote, "bulk00.txt")); !os.IsNotExist(err) {
+		t.Error("remote bulk files must be deleted")
 	}
 }
 

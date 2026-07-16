@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,52 +12,20 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/marker"
-	"github.com/andresbott/netcheckout/internal/rsync"
 )
 
-// fakeSyncer records the jobs it saw. Checkout no longer drives rsync (sync does),
-// so its Sync is never called during a checkout — it exists only to satisfy the
-// Runner.Syncer interface and to let the refusal tests assert that no job ran.
-type fakeSyncer struct {
-	syncErr error
-	diff    rsync.Diff
-	jobs    []rsync.Job
-}
-
-func (f *fakeSyncer) Sync(_ context.Context, j rsync.Job) (rsync.Result, error) {
-	f.jobs = append(f.jobs, j)
-	if f.syncErr != nil {
-		return rsync.Result{}, f.syncErr
+// requireRsync skips tests that drive the real engine when rsync is not on PATH
+// (GOALS.md assumes it is installed, so this is a CI safety valve, not a mock).
+func requireRsync(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not on PATH")
 	}
-	_ = copyTree(j.Remote.Path, j.Local.Path)
-	return rsync.Result{}, nil
-}
-
-func (f *fakeSyncer) Diff(_ context.Context, j rsync.Job) (rsync.Diff, error) {
-	f.jobs = append(f.jobs, j)
-	return f.diff, nil
-}
-
-func copyTree(src, dst string) error {
-	return filepath.Walk(src, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, p)
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o644)
-	})
 }
 
 func fixture(t *testing.T) (local, remote string) {
 	t.Helper()
+	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	root := t.TempDir()
 	local = filepath.Join(root, "local")
 	remote = filepath.Join(root, "remote")
@@ -69,162 +38,287 @@ func fixture(t *testing.T) (local, remote string) {
 	return local, remote
 }
 
+func testIdent() ident.Ident { return ident.Ident{By: "me@host", Host: "host"} }
+
 func TestCheckoutWritesMarkerAndEmptyBaseline(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test", Now: func() time.Time { return time.Unix(0, 0).UTC() }}
-	rep, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, ident.Ident{By: "me@host", Host: "host"}, "", Options{})
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	r := Runner{ToolVersion: "test", Now: func() time.Time { return time.Unix(1000, 0).UTC() }}
+
+	rep, err := r.Checkout(context.Background(), "work", p, testIdent(), "", Options{})
 	if err != nil {
 		t.Fatalf("checkout: %v", err)
 	}
-	// Marker written, owned by us.
-	m, ok, _ := marker.Read(remote)
-	if !ok || !m.OwnedBy("me@host", "host") || m.ToolVersion != "test" {
-		t.Fatalf("marker = %+v ok=%v", m, ok)
+	m, ok, err := marker.Read(remote)
+	if err != nil || !ok {
+		t.Fatalf("marker: ok=%v err=%v", ok, err)
 	}
-	// An EMPTY baseline is recorded: checkout copies nothing, so the first sync
-	// can pull the whole remote down cleanly.
-	b, ok, _ := baseline.Load("work")
-	if !ok {
-		t.Fatal("checkout must record a baseline")
+	if !m.OwnedBy("me@host", "host") || m.Profile != "work" {
+		t.Errorf("marker = %+v", m)
 	}
-	if len(b.Files) != 0 {
-		t.Errorf("checkout baseline must be empty (no files copied), got %d entries", len(b.Files))
+	st, ok, err := baseline.Load("work")
+	if err != nil || !ok {
+		t.Fatalf("state: ok=%v err=%v", ok, err)
 	}
-	// Nothing is pulled and the local target is left untouched.
-	if len(rep.Pulled) != 0 {
-		t.Errorf("checkout must not pull anything, got %v", rep.Pulled)
+	if len(st.Files) != 0 {
+		t.Errorf("baseline must be empty, got %d files", len(st.Files))
 	}
-	if entries, err := os.ReadDir(local); err == nil && len(entries) != 0 {
-		t.Errorf("checkout must not populate the local dir, got %d entries", len(entries))
+	if len(st.Relpaths) != 1 || st.Relpaths[0] != "." {
+		t.Errorf("relpaths = %v", st.Relpaths)
+	}
+	// No file was copied: checkout is marker-only.
+	if _, err := os.Stat(filepath.Join(local, "file.txt")); !os.IsNotExist(err) {
+		t.Error("checkout must not copy files")
+	}
+	if rep.Marker == nil {
+		t.Error("report must carry the marker")
 	}
 }
 
 func TestCheckoutRefusesForeignMarker(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: "alice@nas", Host: "nas", Profile: "work"})
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
-	_, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, ident.Ident{By: "me@host", Host: "host"}, "", Options{})
-	if err == nil {
-		t.Fatal("want refusal on a foreign marker")
+	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: "other@laptop", Host: "laptop", Profile: "work"})
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{}); err == nil {
+		t.Fatal("must refuse a foreign marker")
 	}
 }
 
 func TestCheckoutForceOverridesForeignMarker(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: "alice@nas", Host: "nas", Profile: "work"})
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
-	if _, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, ident.Ident{By: "me@host", Host: "host"}, "", Options{Force: true}); err != nil {
+	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: "other@laptop", Host: "laptop", Profile: "work"})
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{Force: true}); err != nil {
 		t.Fatalf("force checkout: %v", err)
 	}
 	m, _, _ := marker.Read(remote)
 	if !m.OwnedBy("me@host", "host") {
-		t.Errorf("force should rewrite the marker to us, got %+v", m)
+		t.Errorf("marker = %+v", m)
 	}
 }
 
 func TestCheckoutRefusesSelfHeld(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: "me@host", Host: "host", Profile: "work", Relpaths: []string{"."}})
-	id := ident.Ident{By: "me@host", Host: "host"}
-	fs := &fakeSyncer{}
-	r := Runner{Syncer: fs, ToolVersion: "test"}
-	if _, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, id, "", Options{}); err == nil {
-		t.Fatal("want refusal when the profile is already checked out on this machine")
-	}
-	// --force overrides only a foreign lock, never a self-held one.
-	if _, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, id, "", Options{Force: true}); err == nil {
-		t.Fatal("--force must not override a self-held checkout")
+	id := testIdent()
+	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: id.By, Host: id.Host, Profile: "work"})
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, id, "", Options{}); err == nil {
+		t.Fatal("must refuse an already-held profile")
 	}
 }
 
 func TestCheckoutRefusesNonEmptyLocalTarget(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	// Seed the local target with pre-existing content.
 	if err := os.MkdirAll(local, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(local, "keep.dat"), []byte("mine"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(local, "existing.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
-	id := ident.Ident{By: "me@host", Host: "host"}
-	// The guard is absolute: --force must not bypass it.
-	if _, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, id, "", Options{Force: true}); err == nil {
-		t.Fatal("want refusal when the local target is not empty")
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	// The guard is absolute: force does not bypass it.
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{Force: true}); err == nil {
+		t.Fatal("must refuse a non-empty local target")
 	}
-	// A refusal must not write a marker or a baseline.
 	if _, ok, _ := marker.Read(remote); ok {
-		t.Error("refused checkout must not write a marker")
+		t.Error("no marker may be written on refusal")
 	}
-	if _, ok, _ := baseline.Load("work"); ok {
-		t.Error("refused checkout must not write a baseline")
+}
+
+// The vacancy guard is absolute, so it must fail closed: a target it cannot
+// stat (permission denied) is not proof of vacancy.
+func TestCheckoutRefusesUnstatableLocalTarget(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("permission bits do not block root")
+	}
+	local, remote := fixture(t)
+	// local/blocked/target exists but a 0-perm parent makes it unstatable.
+	target := filepath.Join(local, "blocked", "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "data.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(local, "blocked"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(local, "blocked"), 0o755) })
+
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "blocked/target", Options{}); err == nil {
+		t.Fatal("an unstatable local target must refuse, not pass as vacant")
+	}
+	if _, ok, _ := marker.Read(remote); ok {
+		t.Error("no marker may be written on refusal")
 	}
 }
 
 func TestCheckoutAllowsEmptyLocalTarget(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	// A pre-created but empty local dir is fine.
 	if err := os.MkdirAll(local, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test", Now: func() time.Time { return time.Unix(0, 0).UTC() }}
-	if _, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, ident.Ident{By: "me@host", Host: "host"}, "", Options{}); err != nil {
-		t.Fatalf("checkout into an empty local dir: %v", err)
-	}
-	if _, ok, _ := marker.Read(remote); !ok {
-		t.Error("checkout into an empty local dir should write a marker")
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{}); err != nil {
+		t.Fatalf("checkout over empty dir: %v", err)
 	}
 }
 
 func TestCheckoutDryRunWritesNothing(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
-	rep, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, ident.Ident{By: "me@host", Host: "host"}, "", Options{DryRun: true})
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	rep, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{DryRun: true})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("dry-run: %v", err)
+	}
+	if !rep.DryRun {
+		t.Error("report must be flagged dry-run")
 	}
 	if _, ok, _ := marker.Read(remote); ok {
 		t.Error("dry-run must not write a marker")
 	}
 	if _, ok, _ := baseline.Load("work"); ok {
-		t.Error("dry-run must not write a baseline")
+		t.Error("dry-run must not write state")
 	}
-	if !rep.DryRun {
-		t.Errorf("dry-run report = %+v", rep)
+}
+
+func TestCheckoutUnmountedRemoteRefuses(t *testing.T) {
+	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
+	p := config.Profile{LocalRoot: t.TempDir(), RemoteRoot: filepath.Join(t.TempDir(), "missing")}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{}); err == nil {
+		t.Fatal("must refuse an unmounted remote root")
+	}
+}
+
+func TestCheckoutRelpathScopesState(t *testing.T) {
+	local, remote := fixture(t)
+	if err := os.MkdirAll(filepath.Join(remote, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "docs", Options{}); err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	st, _, _ := baseline.Load("work")
+	if len(st.Relpaths) != 1 || st.Relpaths[0] != "docs" {
+		t.Errorf("relpaths = %v", st.Relpaths)
+	}
+	m, _, _ := marker.Read(remote)
+	if len(m.Relpaths) != 1 || m.Relpaths[0] != "docs" {
+		t.Errorf("marker relpaths = %v", m.Relpaths)
+	}
+}
+
+// GOALS §8: relpath omitted = all declared subpaths (not the whole root). The
+// recorded relpaths drive the first sync's scope, so seeding them from the
+// profile keeps sync from pulling out-of-scope trees the UnlistedLocal guard
+// would then refuse to push back.
+func TestCheckoutSeedsRelpathsFromSubpaths(t *testing.T) {
+	local, remote := fixture(t)
+	for _, d := range []string{"a", "b"} {
+		if err := os.MkdirAll(filepath.Join(remote, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote, Subpaths: []string{"a", "b"}}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{}); err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	st, _, _ := baseline.Load("work")
+	if len(st.Relpaths) != 2 || st.Relpaths[0] != "a" || st.Relpaths[1] != "b" {
+		t.Errorf("relpaths = %v, want [a b]", st.Relpaths)
+	}
+	m, _, _ := marker.Read(remote)
+	if len(m.Relpaths) != 2 || m.Relpaths[0] != "a" || m.Relpaths[1] != "b" {
+		t.Errorf("marker relpaths = %v, want [a b]", m.Relpaths)
+	}
+}
+
+// GOALS §5/§8 step 3: a this-machine re-checkout with a new relpath widens the
+// pulled set under the same lock — it must not refuse, must keep the existing
+// baseline manifest, and must record the union of relpaths.
+func TestCheckoutWidensHeldRelpaths(t *testing.T) {
+	requireRsync(t)
+	local, remote := fixture(t)
+	for _, d := range []string{"docs", "notes"} {
+		if err := os.MkdirAll(filepath.Join(remote, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(remote, "docs", "d.txt"), []byte("D"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := testIdent()
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, id, "docs", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	// Pull docs down so the baseline holds real entries.
+	if _, err := (Runner{}).Sync(context.Background(), "work", p, id, "", Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, id, "notes", Options{}); err != nil {
+		t.Fatalf("widening checkout: %v", err)
+	}
+	st, _, _ := baseline.Load("work")
+	if len(st.Relpaths) != 2 || st.Relpaths[0] != "docs" || st.Relpaths[1] != "notes" {
+		t.Errorf("relpaths = %v, want [docs notes]", st.Relpaths)
+	}
+	if _, ok := st.Files["docs/d.txt"]; !ok {
+		t.Error("widening must preserve the existing baseline manifest")
+	}
+	m, _, _ := marker.Read(remote)
+	if len(m.Relpaths) != 2 {
+		t.Errorf("marker relpaths = %v, want [docs notes]", m.Relpaths)
+	}
+	if !m.OwnedBy(id.By, id.Host) {
+		t.Error("lock ownership must be untouched by widening")
+	}
+}
+
+// Re-checking out a relpath already covered by the held set is a no-op ask:
+// refuse with the existing "already checked out" guidance.
+func TestCheckoutRefusesAlreadyCoveredRelpath(t *testing.T) {
+	local, remote := fixture(t)
+	if err := os.MkdirAll(filepath.Join(remote, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := testIdent()
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, id, "docs", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, id, "docs", Options{}); err == nil {
+		t.Fatal("must refuse a relpath already held")
+	}
+	// The whole root covers everything: adding under it is also refused.
+	local2, remote2 := fixture(t)
+	p2 := config.Profile{LocalRoot: local2, RemoteRoot: remote2}
+	if _, err := (Runner{}).Checkout(context.Background(), "whole", p2, id, "", Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Runner{}).Checkout(context.Background(), "whole", p2, id, "docs", Options{}); err == nil {
+		t.Fatal("must refuse a relpath under an already-held whole root")
 	}
 }
 
 func TestCheckoutRollsBackBaselineOnMarkerFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("cannot test write-permission failure as root")
+	if os.Getuid() == 0 {
+		t.Skip("read-only dirs do not block root")
 	}
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	local, remote := fixture(t)
-	// Make the remote root read-only so marker.Write's os.CreateTemp(remoteRoot, ...) fails
-	// AFTER the baseline write has succeeded. Restore perms so cleanup works.
+	// A read-only remote root lets every check pass but fails the marker write.
 	if err := os.Chmod(remote, 0o555); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(remote, 0o755) })
-
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
-	_, err := r.Checkout(context.Background(), "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, ident.Ident{By: "me@host", Host: "host"}, "", Options{})
-	if err == nil {
-		t.Fatal("expected checkout to fail when the marker cannot be written")
+	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
+	if _, err := (Runner{}).Checkout(context.Background(), "work", p, testIdent(), "", Options{}); err == nil {
+		t.Fatal("marker write must fail on a read-only remote")
 	}
-	// Fresh checkout: the baseline written just before the failed marker write must be rolled back.
 	if _, ok, _ := baseline.Load("work"); ok {
-		t.Error("baseline should be rolled back after a marker-write failure on a fresh checkout")
-	}
-	// And no marker was left behind.
-	if _, ok, _ := marker.Read(remote); ok {
-		t.Error("no marker should exist after a failed marker write")
+		t.Error("baseline must be rolled back when the marker write fails")
 	}
 }

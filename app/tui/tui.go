@@ -11,8 +11,6 @@ import (
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
 	"github.com/andresbott/netcheckout/internal/localstat"
-	"github.com/andresbott/netcheckout/internal/reconcile"
-	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -69,8 +67,11 @@ type model struct {
 	err          error
 	id           ident.Ident
 	runner       lifecycle.Runner
-	actForce     bool
-	checkinClean bool // "delete local copy" checkbox in the check-in dialog
+	actForce bool
+	// actAllowDeletes waives the engine's mass-deletion valves for the next
+	// sync (the TUI equivalent of the --allow-deletes flag).
+	actAllowDeletes bool
+	checkinClean    bool // "delete local copy" checkbox in the check-in dialog
 	// cancel aborts the in-flight streaming action (Sync/Checkout/Check-in): its
 	// context feeds exec.CommandContext, so calling it kills the live rsync. It is
 	// nil for Status (a pure file walk with nothing to kill) and once an action
@@ -105,7 +106,7 @@ func newModel(path string, cfg *config.Config) model {
 		list:     newList(nil),
 		checks:   make(map[string]*sanity.Result),
 		id:       id,
-		runner:   lifecycle.Runner{Syncer: rsync.New(), ToolVersion: metainfo.Version},
+		runner:   lifecycle.Runner{ToolVersion: metainfo.Version},
 	}
 	m.refreshList()
 	return m
@@ -398,7 +399,7 @@ type statusResultMsg struct {
 // a newer run) can be recognised and dropped in applyStatusResult.
 func statusCmd(name string, p config.Profile, seq int) tea.Cmd {
 	return func() tea.Msg {
-		st, err := status.Compute(name, p)
+		st, err := status.Compute(context.Background(), name, p)
 		return statusResultMsg{name: name, seq: seq, st: st, err: err}
 	}
 }
@@ -491,7 +492,7 @@ type actionResultMsg struct {
 type syncEventMsg struct {
 	name  string
 	seq   int
-	event reconcile.Event
+	event lifecycle.Event
 	ch    chan tea.Msg
 }
 
@@ -522,7 +523,7 @@ func checkoutCmd(ctx context.Context, r lifecycle.Runner, id ident.Ident, name s
 // the stragglers of a canceled or superseded run.
 func streamCmd(name string, seq int, run func(opts lifecycle.Options) (lifecycle.Report, error), opts lifecycle.Options) tea.Cmd {
 	ch := make(chan tea.Msg)
-	opts.OnApply = func(e reconcile.Event) { ch <- syncEventMsg{name: name, seq: seq, event: e, ch: ch} }
+	opts.OnApply = func(e lifecycle.Event) { ch <- syncEventMsg{name: name, seq: seq, event: e, ch: ch} }
 	go func() {
 		rep, err := run(opts)
 		ch <- actionResultMsg{name: name, seq: seq, report: rep, err: err}
@@ -550,7 +551,7 @@ func checkinCmd(ctx context.Context, r lifecycle.Runner, id ident.Ident, name st
 // applyActionResult stores a mutating action's outcome on the open profile. A
 // result is ignored unless the actions view is still showing that same profile,
 // so a slow run can never overwrite newer state. The report is stored even on
-// error — a conflict stop (*reconcile.ConflictError) carries the conflicting
+// error — a conflict stop (*lifecycle.ConflictError) carries the conflicting
 // paths in report.Conflicts, which renderStatus needs to show them instead of
 // just a count-only error string. actionErr is still set so non-conflict
 // failures (e.g. the remote root not being mounted) render as an error.
@@ -627,6 +628,9 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "f":
 		m.actForce = !m.actForce
 		return m, nil
+	case "x":
+		m.actAllowDeletes = !m.actAllowDeletes
+		return m, nil
 	}
 
 	// Activity pane: the arrow and page keys scroll the status viewport.
@@ -697,7 +701,7 @@ func (m model) updateProfile(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ctx, cancel := context.WithCancel(context.Background())
 			m.cancel = cancel
 			m.actionSeq++
-			opts := lifecycle.Options{Force: m.actForce}
+			opts := lifecycle.Options{Force: m.actForce, AllowDeletes: m.actAllowDeletes}
 			return m, syncCmd(ctx, m.runner, m.id, m.profile.name, m.cfg.Profiles[m.profile.name], m.actionSeq, opts)
 		case "Check-in":
 			m.confirmName = m.profile.name
@@ -814,7 +818,8 @@ func validateProfile(cfg *config.Config, origName, name string, p config.Profile
 	if err := config.ValidateRoot(p.LocalRoot); err != nil {
 		return fmt.Errorf("local root: %w", err)
 	}
-	if err := config.ValidateRoot(p.RemoteRoot); err != nil {
+	// The remote also accepts ssh:// and rsync:// endpoint URLs.
+	if err := config.ValidateRemoteRoot(p.RemoteRoot); err != nil {
 		return fmt.Errorf("remote root: %w", err)
 	}
 	return nil
@@ -893,7 +898,7 @@ func (m model) mainView(dim bool) string {
 
 	footer := renderFooter(w)
 	if m.sub == subActions {
-		footer = renderProfileFooter(w, m.actForce, m.pane == paneActivity)
+		footer = renderProfileFooter(w, m.actForce, m.actAllowDeletes, m.pane == paneActivity)
 	}
 	view := renderHeader(w, m.version, m.identity) + "\n" + panels + "\n" + footer
 	if m.err != nil {

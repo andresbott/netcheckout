@@ -1,6 +1,7 @@
 package threewayrsync
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -37,9 +38,83 @@ func TestParseListLineSkipsChatterAndDirs(t *testing.T) {
 		"",
 		"cd+++++++++ 4096 2026/07/14-09:15:00 sub", // directory (2nd flag 'd')
 		".d..t...... 4096 2026/07/14-09:15:00 ./",  // root
+		"cL+++++++++ 7 2026/07/14-09:15:00 link",   // symlink
 	} {
-		if _, _, ok := parseListLine(line); ok {
-			t.Errorf("line should be skipped: %q", line)
+		_, _, ok, err := parseListLine(line)
+		if ok || err != nil {
+			t.Errorf("line should be silently skipped: %q (ok=%v err=%v)", line, ok, err)
+		}
+	}
+}
+
+// A line that is itemize-shaped but malformed must be an error, not a silent skip:
+// dropping entries makes the corresponding files look deleted.
+func TestParseListLineErrorsOnMalformedItemize(t *testing.T) {
+	for _, line := range []string{
+		">f+++++++++ notasize 2026/07/14-09:15:00 a.txt", // bad size
+		">f+++++++++ 1 14-07-2026 a.txt",                 // bad mtime format
+		">f+++++++++ 1",                                  // truncated
+		">f+++++++++ 1 2026/07/14-09:15:00 /etc/passwd",  // absolute path
+		">f+++++++++ 1 2026/07/14-09:15:00 ../escape",    // traversal
+	} {
+		if _, _, _, err := parseListLine(line); err == nil {
+			t.Errorf("want parse error for %q", line)
+		}
+	}
+}
+
+func TestParseListOutputPropagatesError(t *testing.T) {
+	if _, err := parseListOutput(">f+++++++++ bad 2026/07/14-09:15:00 x\n"); err == nil {
+		t.Fatal("want error for malformed itemize line")
+	}
+}
+
+// rsync escapes unprintable filename bytes as \#ooo; the manifest must carry the real
+// on-disk name or deletes miss it and the file resurrects next sync.
+func TestParseListLineDecodesEscapes(t *testing.T) {
+	fs, path, ok, err := parseListLine(`>f+++++++++ 1 2026/07/14-09:15:00 a\#012b.txt`)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if path != "a\nb.txt" {
+		t.Errorf("path = %q, want %q", path, "a\nb.txt")
+	}
+	if fs.Size != 1 {
+		t.Errorf("size = %d", fs.Size)
+	}
+}
+
+func TestDecodeListPath(t *testing.T) {
+	cases := map[string]string{
+		"plain.txt":     "plain.txt",
+		`tab\#011x`:     "tab\tx",
+		`nl\#012x`:      "nl\nx",
+		`not\#9x`:       `not\#9x`, // not three octal digits: literal
+		`trail\#`:       `trail\#`,
+		`back\\slash.t`: `back\\slash.t`, // plain backslash untouched
+	}
+	for in, want := range cases {
+		if got := decodeListPath(in); got != want {
+			t.Errorf("decodeListPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestSafeRelPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		"a.txt":     true,
+		"sub/b.txt": true,
+		"a\nb.txt":  true, // newline is a legal filename byte; the file list is NUL-separated
+		"/abs":      false,
+		"../up":     false,
+		"a/../b":    false,
+		"a/./b":     false,
+		"a//b":      false,
+		"":          false,
+		"a\x00b":    false, // NUL is the file-list separator
+	} {
+		if got := safeRelPath(p); got != want {
+			t.Errorf("safeRelPath(%q) = %v, want %v", p, got, want)
 		}
 	}
 }
@@ -47,9 +122,10 @@ func TestParseListLineSkipsChatterAndDirs(t *testing.T) {
 func TestItemizeWriterStreamsPaths(t *testing.T) {
 	var got []string
 	w := &itemizeWriter{onPath: func(p string) { got = append(got, p) }}
-	// Split one line across two writes to prove partial input is buffered.
+	// Split one line across two writes to prove partial input is buffered. The
+	// directory row (cd) must be skipped: progress events are files only.
 	chunks := []string{
-		"sending incremental file list\n>f+++++++++ new.txt\n>f.st",
+		"sending incremental file list\ncd+++++++++ sub/\n>f+++++++++ new.txt\n>f.st",
 		"...... changed.txt\n",
 	}
 	for _, c := range chunks {
@@ -59,5 +135,16 @@ func TestItemizeWriterStreamsPaths(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "new.txt" || got[1] != "changed.txt" {
 		t.Errorf("streamed paths = %v", got)
+	}
+}
+
+func TestParseListOutputLongLine(t *testing.T) {
+	long := strings.Repeat("d/", 500) + "x.txt"
+	m, err := parseListOutput(">f+++++++++ 1 2026/07/14-09:15:00 " + long + "\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m[long]; !ok {
+		t.Error("long path missing")
 	}
 }

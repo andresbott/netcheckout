@@ -51,7 +51,7 @@ func TestScanCountsDirsFilesBytesAndSkipsMarkerAndSymlinks(t *testing.T) {
 
 func TestScanHonorsSubpaths(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "docs/a.txt", "aa")      // 2 bytes, in scope
+	writeFile(t, root, "docs/a.txt", "aa")       // 2 bytes, in scope
 	writeFile(t, root, "docs/nested/b.txt", "b") // 1 byte, in scope
 	writeFile(t, root, "other/c.txt", "cccc")    // out of scope, must not count
 

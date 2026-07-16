@@ -13,6 +13,7 @@ import (
 	"github.com/andresbott/netcheckout/internal/lifecycle"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
+	"github.com/andresbott/netcheckout/pkg/threewayrsync"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -344,8 +345,8 @@ func TestEscFromActivityReturnsToList(t *testing.T) {
 // list) never leaks into the next profile.
 func TestOpenProfileResetsPane(t *testing.T) {
 	m := openActions(t, testConfig())
-	m.sub = subList        // as a completed check-in leaves it,
-	m.pane = paneActivity  // still focused on the activity pane
+	m.sub = subList       // as a completed check-in leaves it,
+	m.pane = paneActivity // still focused on the activity pane
 	m = update(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.sub != subActions {
 		t.Fatalf("Enter should reopen a profile, got sub=%d", m.sub)
@@ -361,6 +362,7 @@ func TestOpenProfileResetsPane(t *testing.T) {
 // there.
 func mountedConfig(t *testing.T) *config.Config {
 	t.Helper()
+	requireRsync(t) // status.Compute enumerates via the real engine
 	local := filepath.Join(t.TempDir(), "local")
 	remote := filepath.Join(t.TempDir(), "remote")
 	for _, d := range []string{local, remote} {
@@ -377,16 +379,11 @@ func mountedConfig(t *testing.T) *config.Config {
 	}}
 }
 
-// saveEmptyBaseline snapshots the alpha profile's current local tree and saves it
-// as the profile's baseline.
+// saveEmptyBaseline records an empty base manifest for the alpha profile, the
+// state a fresh checkout leaves behind.
 func saveEmptyBaseline(t *testing.T, cfg *config.Config) {
 	t.Helper()
-	local := cfg.Profiles["alpha"].LocalRoot
-	files, err := baseline.Snapshot(local, []string{"."})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := baseline.Save(&baseline.Baseline{Profile: "alpha", Relpaths: []string{"."}, Files: files}); err != nil {
+	if err := baseline.Save(&baseline.State{Profile: "alpha", Relpaths: []string{"."}, Files: threewayrsync.Manifest{}}); err != nil {
 		t.Fatal(err)
 	}
 }

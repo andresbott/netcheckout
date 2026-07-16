@@ -1,6 +1,8 @@
 package threewayrsync
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -35,4 +37,32 @@ func TestFileStoreRoundTrip(t *testing.T) {
 	if got["a.txt"].Size != 3 || !got["a.txt"].ModTime.Equal(time.Unix(100, 0)) {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
+}
+
+func TestFileStoreCorruptStateIsTyped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "base.json")
+	if err := os.WriteFile(path, []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := FileStore{Path: path}.LoadBase()
+	if !errors.Is(err, ErrCorruptState) {
+		t.Fatalf("want ErrCorruptState, got %v", err)
+	}
+}
+
+func TestFileStoreTryLockExcludes(t *testing.T) {
+	fs := FileStore{Path: filepath.Join(t.TempDir(), "base.json")}
+	release, err := fs.TryLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.TryLock(); !errors.Is(err, ErrLocked) {
+		t.Fatalf("second TryLock must fail with ErrLocked, got %v", err)
+	}
+	release()
+	release2, err := fs.TryLock()
+	if err != nil {
+		t.Fatalf("lock must be reacquirable after release: %v", err)
+	}
+	release2()
 }

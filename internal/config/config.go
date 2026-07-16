@@ -11,11 +11,17 @@ import (
 )
 
 // Profile is a named pair of roots: one on fast local disk, one on the network share.
+// RemoteRoot is a plain absolute path (a mounted share), or an "ssh://[user@]host[:port]/abs/path"
+// or "rsync://[user@]host[:port]/module[/path]" endpoint URL (see RemoteEndpoint).
 // Subpaths, when non-empty, scope the profile to only those relative paths under both
 // roots; an empty list means the whole root.
 type Profile struct {
 	LocalRoot  string `yaml:"local_root"`
 	RemoteRoot string `yaml:"remote_root"`
+	// SSHIdentityFile, for an ssh:// remote, is the private key handed to ssh -i.
+	SSHIdentityFile string `yaml:"ssh_identity_file,omitempty"`
+	// RsyncdPasswordFile, for an rsync:// remote, is handed to rsync --password-file.
+	RsyncdPasswordFile string `yaml:"rsyncd_password_file,omitempty"`
 	// TODO(subpaths-scan): edits can happen on either end. Nothing yet detects a folder
 	// added locally (or newly appearing remotely) that is not listed here — such a folder
 	// is silently ignored by a scoped action. A future scan must walk both roots, compare

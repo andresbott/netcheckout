@@ -9,17 +9,15 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
-	"github.com/andresbott/netcheckout/internal/reconcile"
-	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/spf13/cobra"
 )
 
 func newSyncCmd(cfgPath *string) *cobra.Command {
-	return newSyncCmdWithRunner(cfgPath, lifecycle.Runner{Syncer: rsync.New(), ToolVersion: metainfo.Version})
+	return newSyncCmdWithRunner(cfgPath, lifecycle.Runner{ToolVersion: metainfo.Version})
 }
 
 func newSyncCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command {
-	var force, dryRun, verbose bool
+	var force, dryRun, allowDeletes bool
 	cmd := &cobra.Command{
 		Use:   "sync <profile> [relpath]",
 		Short: "reconcile a held checkout in place (push, pull, stop on conflicts)",
@@ -42,22 +40,16 @@ func newSyncCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runner := r
-			if verbose {
-				if s, ok := runner.Syncer.(*rsync.Syncer); ok {
-					s.Output = cmd.ErrOrStderr()
-				}
-			}
 			rel := ""
 			if len(args) == 2 {
 				rel = args[1]
 			}
-			opts := lifecycle.Options{Force: force, DryRun: dryRun}
+			opts := lifecycle.Options{Force: force, DryRun: dryRun, AllowDeletes: allowDeletes}
 			if !dryRun {
 				out := cmd.OutOrStdout()
-				opts.OnApply = func(e reconcile.Event) { printApplyEvent(out, e) }
+				opts.OnApply = func(e lifecycle.Event) { printApplyEvent(out, e) }
 			}
-			rep, err := runner.Sync(context.Background(), name, p, id, rel, opts)
+			rep, err := r.Sync(context.Background(), name, p, id, rel, opts)
 			if err != nil {
 				printReconcileReport(cmd.OutOrStdout(), name, rep) // show conflicts before the non-zero exit
 				return err
@@ -68,22 +60,22 @@ func newSyncCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&force, "force", false, "resolve conflicts local-wins (never overrides the lock check)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the reconcile plan without changing anything")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream rsync output")
+	cmd.Flags().BoolVar(&allowDeletes, "allow-deletes", false, "permit a sync whose deletions exceed the mass-deletion guard (e.g. after renaming a large directory)")
 	return cmd
 }
 
 // printApplyEvent renders one applied change live, in the same "verb → side
-// path" shape as the status view, as sync/checkin carry the reconcile out.
-func printApplyEvent(w io.Writer, e reconcile.Event) {
+// path" shape as the status view, as sync carries the reconcile out.
+func printApplyEvent(w io.Writer, e lifecycle.Event) {
 	verb := "modify"
 	switch e.Kind {
-	case reconcile.EventAdd:
+	case lifecycle.EventAdd:
 		verb = "add"
-	case reconcile.EventDelete:
+	case lifecycle.EventDelete:
 		verb = "delete"
 	}
 	side := "local"
-	if e.Side == reconcile.SideRemote {
+	if e.Side == lifecycle.SideRemote {
 		side = "remote"
 	}
 	_, _ = fmt.Fprintf(w, "  %-8s → %-6s  %s\n", verb, side, e.Path)

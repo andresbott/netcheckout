@@ -1,13 +1,21 @@
 package baseline
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/andresbott/netcheckout/internal/marker"
+	"github.com/andresbott/netcheckout/pkg/threewayrsync"
 )
+
+func stateDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("NETCHECKOUT_STATE", dir)
+	return dir
+}
 
 func TestDirHonorsStateOverride(t *testing.T) {
 	t.Setenv("NETCHECKOUT_STATE", "/tmp/state-x")
@@ -17,174 +25,136 @@ func TestDirHonorsStateOverride(t *testing.T) {
 	}
 }
 
-func TestSaveLoadRemoveRoundTrip(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
-	b := &Baseline{
+func TestSaveLoadRoundTrip(t *testing.T) {
+	stateDir(t)
+	when := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	s := &State{
 		Profile:    "photos",
-		Relpaths:   []string{"."},
-		Files:      map[string]FileState{"a.txt": {Size: 3, ModTime: time.Unix(100, 0), Hash: "deadbeef"}},
-		LastSyncAt: time.Unix(200, 0),
+		Relpaths:   []string{"2025/jan"},
+		Files:      threewayrsync.Manifest{"a.txt": {Size: 3, ModTime: when}},
+		LastSyncAt: when,
 	}
-	if err := Save(b); err != nil {
+	if err := Save(s); err != nil {
 		t.Fatal(err)
 	}
 	got, ok, err := Load("photos")
 	if err != nil || !ok {
-		t.Fatalf("Load = ok %v err %v", ok, err)
+		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	if got.Files["a.txt"].Hash != "deadbeef" {
-		t.Errorf("round-trip mismatch: %+v", got)
+	if got.Profile != "photos" || len(got.Relpaths) != 1 || got.Relpaths[0] != "2025/jan" {
+		t.Errorf("state = %+v", got)
 	}
-	if err := Remove("photos"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := Load("photos"); ok {
-		t.Error("baseline still present after Remove")
+	if fs := got.Files["a.txt"]; fs.Size != 3 || !fs.ModTime.Equal(when) {
+		t.Errorf("files = %+v", got.Files)
 	}
 }
 
-func TestLoadMissingReturnsNotExists(t *testing.T) {
-	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
-	if _, ok, err := Load("nope"); ok || err != nil {
-		t.Fatalf("Load(missing) = ok %v err %v; want false,nil", ok, err)
+func TestLoadMissingIsNotError(t *testing.T) {
+	stateDir(t)
+	_, ok, err := Load("nope")
+	if err != nil || ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
 	}
 }
 
-func TestSnapshotHashesFilesAndSkipsMarker(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello"), 0o644); err != nil {
+func TestLoadTruncatesMtimesToSeconds(t *testing.T) {
+	stateDir(t)
+	when := time.Date(2026, 7, 15, 10, 0, 0, 123456789, time.UTC)
+	if err := Save(&State{Profile: "p", Files: threewayrsync.Manifest{"a": {Size: 1, ModTime: when}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "sub", "b.txt"), []byte("world"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A marker at the root must be excluded from the snapshot.
-	if err := os.WriteFile(filepath.Join(root, marker.FileName), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	files, err := Snapshot(root, []string{"."})
+	got, _, err := Load("p")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := files[marker.FileName]; ok {
-		t.Error("snapshot must not include the marker file")
-	}
-	if len(files) != 2 {
-		t.Fatalf("want 2 files, got %d: %+v", len(files), files)
-	}
-	if files["a.txt"].Hash == "" || files["sub/b.txt"].Hash == "" {
-		t.Errorf("snapshot must record hashes: %+v", files)
-	}
-	if files["a.txt"].Size != 5 {
-		t.Errorf("a.txt size = %d, want 5", files["a.txt"].Size)
+	if !got.Files["a"].ModTime.Equal(when.Truncate(time.Second)) {
+		t.Errorf("mtime = %v, want second resolution", got.Files["a"].ModTime)
 	}
 }
 
-func TestSnapshotSkipsNonRegularFiles(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("hi"), 0o644); err != nil {
+func TestLoadOldFormatWithHashes(t *testing.T) {
+	dir := stateDir(t)
+	// A state file written by the previous engine: hash fields present, ns mtimes.
+	old := `{
+  "profile": "work",
+  "relpaths": ["."],
+  "files": {"doc.txt": {"size": 10, "mtime": "2026-07-01T09:30:15.123456789Z", "hash": "abc123"}},
+  "last_sync_at": "2026-07-01T09:31:00Z"
+}`
+	if err := os.WriteFile(filepath.Join(dir, "work.json"), []byte(old), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// A broken symlink (points nowhere) must be skipped, not hashed.
-	if err := os.Symlink(filepath.Join(root, "does-not-exist"), filepath.Join(root, "dangling")); err != nil {
-		t.Skipf("symlinks unsupported here: %v", err)
+	got, ok, err := Load("work")
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
 	}
-	files, err := Snapshot(root, []string{"."})
+	fs := got.Files["doc.txt"]
+	if fs.Size != 10 || fs.ModTime.Nanosecond() != 0 {
+		t.Errorf("files = %+v", fs)
+	}
+}
+
+func TestRemoveIsIdempotent(t *testing.T) {
+	stateDir(t)
+	if err := Save(&State{Profile: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove("p"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := Load("p"); ok {
+		t.Fatal("state should be gone")
+	}
+	if err := Remove("p"); err != nil {
+		t.Errorf("second remove: %v", err)
+	}
+}
+
+func TestProfileStoreRoundTrip(t *testing.T) {
+	stateDir(t)
+	when := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	if err := Save(&State{Profile: "p", Relpaths: []string{"docs"}, LastSyncAt: when}); err != nil {
+		t.Fatal(err)
+	}
+	ps := &ProfileStore{Profile: "p", Now: func() time.Time { return when.Add(time.Hour) }}
+	base, ok, err := ps.LoadBase()
+	if err != nil || !ok || len(base) != 0 {
+		t.Fatalf("base=%v ok=%v err=%v", base, ok, err)
+	}
+	merged := threewayrsync.Manifest{"x": {Size: 1, ModTime: when}}
+	if err := ps.SaveBase(merged); err != nil {
+		t.Fatal(err)
+	}
+	// The envelope survives, Files is replaced, LastSyncAt is stamped.
+	s, _, err := Load("p")
 	if err != nil {
-		t.Fatalf("Snapshot must not error on a symlink: %v", err)
+		t.Fatal(err)
 	}
-	if _, ok := files["dangling"]; ok {
-		t.Error("symlink must be excluded from the snapshot")
+	if len(s.Relpaths) != 1 || s.Relpaths[0] != "docs" {
+		t.Errorf("relpaths lost: %+v", s)
 	}
-	if _, ok := files["real.txt"]; !ok {
-		t.Error("regular file should still be captured")
+	if len(s.Files) != 1 || !s.LastSyncAt.Equal(when.Add(time.Hour)) {
+		t.Errorf("state = %+v", s)
 	}
 }
 
-func TestScanRecordsSizeMtimeNoHash(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
+func TestProfileStoreLoadBaseMissing(t *testing.T) {
+	stateDir(t)
+	base, ok, err := Store("ghost").LoadBase()
+	if err != nil || ok || base != nil {
+		t.Fatalf("base=%v ok=%v err=%v", base, ok, err)
 	}
-	got, err := Scan(root, []string{"."})
+}
+
+func TestProfileStoreTryLock(t *testing.T) {
+	stateDir(t)
+	ps := Store("p")
+	release, err := ps.TryLock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	fs, ok := got["a.txt"]
-	if !ok || fs.Size != 5 {
-		t.Fatalf("scan a.txt = %+v ok=%v", fs, ok)
-	}
-	if fs.Hash != "" {
-		t.Errorf("Scan must not hash (fast path); got %q", fs.Hash)
-	}
-}
-
-func TestScanSkipsNonRegularFiles(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("hi"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A broken symlink (points nowhere) must be skipped, not stat'd into the manifest.
-	if err := os.Symlink(filepath.Join(root, "does-not-exist"), filepath.Join(root, "dangling")); err != nil {
-		t.Skipf("symlinks unsupported here: %v", err)
-	}
-	files, err := Scan(root, []string{"."})
-	if err != nil {
-		t.Fatalf("Scan must not error on a symlink: %v", err)
-	}
-	if _, ok := files["dangling"]; ok {
-		t.Error("symlink must be excluded from the scan manifest")
-	}
-	if _, ok := files["real.txt"]; !ok {
-		t.Error("regular file should still be captured")
-	}
-}
-
-func TestChangedFastPathUnchanged(t *testing.T) {
-	root := t.TempDir()
-	p := filepath.Join(root, "a.txt")
-	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	info, _ := os.Stat(p)
-	base := FileState{Size: 5, ModTime: info.ModTime(), Hash: "irrelevant"}
-	cur := FileState{Size: 5, ModTime: info.ModTime()}
-	changed, err := Changed(base, cur, p)
-	if err != nil || changed {
-		t.Fatalf("same size+mtime must be unchanged; changed=%v err=%v", changed, err)
-	}
-}
-
-func TestChangedHashConfirmsSameContent(t *testing.T) {
-	root := t.TempDir()
-	p := filepath.Join(root, "a.txt")
-	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	h, _ := HashFile(p)
-	// mtime differs from base, but content (hash) matches => NOT changed.
-	base := FileState{Size: 5, ModTime: time.Unix(1, 0), Hash: h}
-	cur := FileState{Size: 5, ModTime: time.Unix(999, 0)}
-	changed, err := Changed(base, cur, p)
-	if err != nil || changed {
-		t.Fatalf("matching hash must be unchanged despite mtime; changed=%v err=%v", changed, err)
-	}
-}
-
-func TestChangedDetectsRealEdit(t *testing.T) {
-	root := t.TempDir()
-	p := filepath.Join(root, "a.txt")
-	if err := os.WriteFile(p, []byte("EDITED"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	base := FileState{Size: 5, ModTime: time.Unix(1, 0), Hash: "0000"}
-	cur := FileState{Size: 6, ModTime: time.Unix(2, 0)}
-	changed, err := Changed(base, cur, p)
-	if err != nil || !changed {
-		t.Fatalf("different content must be changed; changed=%v err=%v", changed, err)
+	defer release()
+	if _, err := ps.TryLock(); !errors.Is(err, threewayrsync.ErrLocked) {
+		t.Fatalf("second lock err = %v, want ErrLocked", err)
 	}
 }

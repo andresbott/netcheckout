@@ -11,6 +11,10 @@ func TestEndpointRender(t *testing.T) {
 		{"local", Endpoint{Path: "/data"}, "/data"},
 		{"ssh host only", Endpoint{Path: "/data", SSH: &SSH{Host: "nas"}}, "nas:/data"},
 		{"ssh user host", Endpoint{Path: "/data", SSH: &SSH{User: "a", Host: "nas"}}, "a@nas:/data"},
+		{"daemon module root", Endpoint{Daemon: &Daemon{Host: "nas", Module: "data"}}, "rsync://nas/data"},
+		{"daemon subpath", Endpoint{Path: "proj/x", Daemon: &Daemon{Host: "nas", Module: "data"}}, "rsync://nas/data/proj/x"},
+		{"daemon slashed path", Endpoint{Path: "/proj/", Daemon: &Daemon{Host: "nas", Module: "data"}}, "rsync://nas/data/proj"},
+		{"daemon user port", Endpoint{Path: "p", Daemon: &Daemon{Host: "nas", Port: 8730, User: "u", Module: "m"}}, "rsync://u@nas:8730/m/p"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -53,6 +57,29 @@ func TestValidate(t *testing.T) {
 		"empty local":   {Endpoint{Path: ""}, remote, true},
 		"empty remote":  {local, Endpoint{Path: ""}, true},
 		"ssh no host":   {local, Endpoint{Path: "/r", SSH: &SSH{Host: ""}}, true},
+		// Option-injection hardening: a host/user/identity leading with "-" would reach
+		// ssh/rsync as an option (e.g. -oProxyCommand=... => command execution).
+		"dash host":       {local, Endpoint{Path: "/r", SSH: &SSH{Host: "-oProxyCommand=evil"}}, true},
+		"dash user":       {local, Endpoint{Path: "/r", SSH: &SSH{Host: "h", User: "-x"}}, true},
+		"dash identity":   {local, Endpoint{Path: "/r", SSH: &SSH{Host: "h", IdentityFile: "-x"}}, true},
+		"space in host":   {local, Endpoint{Path: "/r", SSH: &SSH{Host: "h x"}}, true},
+		"at in host":      {local, Endpoint{Path: "/r", SSH: &SSH{Host: "a@b"}}, true},
+		"colon in user":   {local, Endpoint{Path: "/r", SSH: &SSH{Host: "h", User: "a:b"}}, true},
+		"normal identity": {local, Endpoint{Path: "/r", SSH: &SSH{Host: "h", IdentityFile: "/home/u/.ssh/id"}}, false},
+		// Daemon endpoints: same remote-count and option-injection rules.
+		"remote daemon ok":        {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m"}}, false},
+		"daemon with path ok":     {local, Endpoint{Path: "sub/dir", Daemon: &Daemon{Host: "h", Module: "m"}}, false},
+		"daemon password file ok": {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m", PasswordFile: "/home/u/.rsyncpw"}}, false},
+		"ssh and daemon both set": {local, Endpoint{Path: "/r", SSH: &SSH{Host: "h"}, Daemon: &Daemon{Host: "h", Module: "m"}}, true},
+		"ssh plus daemon remotes": {Endpoint{Path: "/l", SSH: &SSH{Host: "h"}}, Endpoint{Daemon: &Daemon{Host: "h", Module: "m"}}, true},
+		"both daemon":             {Endpoint{Daemon: &Daemon{Host: "h", Module: "m"}}, Endpoint{Daemon: &Daemon{Host: "h", Module: "m"}}, true},
+		"daemon no host":          {local, Endpoint{Daemon: &Daemon{Module: "m"}}, true},
+		"daemon no module":        {local, Endpoint{Daemon: &Daemon{Host: "h"}}, true},
+		"daemon dash host":        {local, Endpoint{Daemon: &Daemon{Host: "-h", Module: "m"}}, true},
+		"daemon dash password":    {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m", PasswordFile: "-x"}}, true},
+		"daemon slash in module":  {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m/sub"}}, true},
+		"daemon colon in host":    {local, Endpoint{Daemon: &Daemon{Host: "h:1", Module: "m"}}, true},
+		"daemon space in module":  {local, Endpoint{Daemon: &Daemon{Host: "h", Module: "m x"}}, true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

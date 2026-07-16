@@ -6,6 +6,7 @@
 package sanity
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,30 +32,24 @@ type Subpath struct {
 	Exists bool
 }
 
-// Check runs the stat-only checks for a profile. It returns no error: a missing
-// path or unmounted remote is data (a false field), not a failure.
+// Check runs the lightweight checks for a profile. It returns no error: a
+// missing path or unreachable remote is data (a false field), not a failure.
+// A mounted-path remote is stat-only; a URL remote (ssh:// or rsync://) probes
+// reachability and checkout state with a single marker fetch over rsync, and
+// omits the per-subpath existence rows (no cheap remote stat exists).
 func Check(p config.Profile) Result {
 	var r Result
 	if _, err := os.Stat(config.ExpandRoot(p.LocalRoot)); err == nil {
 		r.LocalRoot = true
 	}
-	remoteRoot := config.ExpandRoot(p.RemoteRoot)
-	if info, err := os.Stat(remoteRoot); err == nil && info.IsDir() {
-		r.RemoteRoot = true
-	}
-	// The marker is per-profile at the remote root (GOALS.md §5).
-	if _, err := os.Stat(marker.Path(remoteRoot)); err == nil {
-		r.CheckedOut = true
-	}
 
-	targets, err := p.Targets()
-	if err != nil {
-		return r
-	}
-	for _, t := range targets {
-		if t.Subpath != "" {
-			_, err := os.Stat(t.Remote)
-			r.Subpaths = append(r.Subpaths, Subpath{Path: t.Subpath, Exists: err == nil})
+	if p.RemoteIsLocalPath() {
+		checkMountedRemote(p, &r)
+	} else if e, err := p.RemoteEndpoint(); err == nil {
+		if _, found, err := marker.ForEndpoint(e).Read(context.Background()); err == nil {
+			// The fetch reached the endpoint (found or cleanly absent).
+			r.RemoteRoot = true
+			r.CheckedOut = found
 		}
 	}
 
@@ -63,6 +58,29 @@ func Check(p config.Profile) Result {
 		r.UnlistedLocal = unlisted
 	}
 	return r
+}
+
+// checkMountedRemote fills the remote-side fields for a mounted-path remote:
+// root presence, marker presence, and per-subpath existence — all stat-only.
+func checkMountedRemote(p config.Profile, r *Result) {
+	remoteRoot := config.ExpandRoot(p.RemoteRoot)
+	if info, err := os.Stat(remoteRoot); err == nil && info.IsDir() {
+		r.RemoteRoot = true
+	}
+	// The marker is per-profile at the remote root (GOALS.md §5).
+	if _, err := os.Stat(marker.Path(remoteRoot)); err == nil {
+		r.CheckedOut = true
+	}
+	targets, err := p.Targets()
+	if err != nil {
+		return
+	}
+	for _, t := range targets {
+		if t.Subpath != "" {
+			_, err := os.Stat(t.Remote)
+			r.Subpaths = append(r.Subpaths, Subpath{Path: t.Subpath, Exists: err == nil})
+		}
+	}
 }
 
 // UnlistedLocal walks local_root and returns the shallowest paths (relative to

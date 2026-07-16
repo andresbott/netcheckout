@@ -60,7 +60,7 @@ func runCLIEnv(t *testing.T, configPath string, extraEnv []string, args ...strin
 }
 
 // requireRsync skips the calling test if rsync is not on PATH (mirrors the check in
-// internal/rsync/integration_test.go).
+// pkg/threewayrsync/integration_test.go).
 func requireRsync(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("rsync"); err != nil {

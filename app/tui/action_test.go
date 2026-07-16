@@ -4,56 +4,30 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/andresbott/netcheckout/internal/baseline"
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
 	"github.com/andresbott/netcheckout/internal/localstat"
 	"github.com/andresbott/netcheckout/internal/marker"
-	"github.com/andresbott/netcheckout/internal/reconcile"
-	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-type tuiFakeSyncer struct{}
-
-func (tuiFakeSyncer) Sync(_ context.Context, j rsync.Job) (rsync.Result, error) {
-	_ = filepath.Walk(j.Remote.Path, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(j.Remote.Path, p)
-		target := filepath.Join(j.Local.Path, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		data, _ := os.ReadFile(p)
-		return os.WriteFile(target, data, 0o644)
-	})
-	// Stream one itemized change per requested file, as rsync would. A checkout
-	// pulls the whole tree (no Files), so stream a single created change there.
-	if j.OnChange != nil {
-		if len(j.Files) > 0 {
-			for _, f := range j.Files {
-				j.OnChange(rsync.Change{Path: f, Type: rsync.Modified})
-			}
-		} else {
-			j.OnChange(rsync.Change{Path: "f", Type: rsync.Created})
-		}
+// requireRsync skips engine-driving tests when rsync is not on PATH.
+func requireRsync(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not on PATH")
 	}
-	return rsync.Result{Changes: []rsync.Change{{Path: "f", Type: rsync.Created}}}, nil
-}
-func (tuiFakeSyncer) Diff(_ context.Context, _ rsync.Job) (rsync.Diff, error) {
-	return rsync.Diff{}, nil
 }
 
 func TestCheckoutCmdProducesMarker(t *testing.T) {
+	requireRsync(t)
 	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	root := t.TempDir()
 	local := filepath.Join(root, "local")
@@ -61,7 +35,7 @@ func TestCheckoutCmdProducesMarker(t *testing.T) {
 	_ = os.MkdirAll(remote, 0o755)
 	_ = os.WriteFile(filepath.Join(remote, "f"), []byte("x"), 0o644)
 
-	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
+	runner := lifecycle.Runner{ToolVersion: "test"}
 	p := config.Profile{LocalRoot: local, RemoteRoot: remote}
 	_, res := drainStream(t, checkoutCmd(context.Background(), runner, ident.Ident{By: "me@host", Host: "host"}, "work", p, 0, lifecycle.Options{})())
 	if res.err != nil {
@@ -81,6 +55,19 @@ func TestToggleForce(t *testing.T) {
 	}
 }
 
+func TestToggleAllowDeletes(t *testing.T) {
+	m := model{sub: subActions}
+	m.profile = newProfileView("work")
+	m2, _ := m.updateProfile(keyMsg("x"))
+	if !m2.(model).actAllowDeletes {
+		t.Error("x should toggle allow-deletes on")
+	}
+	m3, _ := m2.(model).updateProfile(keyMsg("x"))
+	if m3.(model).actAllowDeletes {
+		t.Error("x should toggle allow-deletes back off")
+	}
+}
+
 func keyMsg(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
 // actionIndex returns the position of name within actions, so tests can
@@ -94,31 +81,34 @@ func actionIndex(actions []string, name string) int {
 	return -1
 }
 
-// tuiHeldFixture mirrors internal/lifecycle's heldFixture (see
-// internal/lifecycle/sync_test.go): a profile already checked out, with a
-// marker and baseline snapshot on both sides, so Sync has a held checkout to
-// reconcile.
+// tuiHeldFixture builds a held checkout with a real engine round trip: a
+// checkout followed by a first sync, so the base manifest comes from rsync
+// listings exactly as production does.
 func tuiHeldFixture(t *testing.T) (name string, p config.Profile, id ident.Ident) {
 	t.Helper()
+	requireRsync(t)
 	root := t.TempDir()
 	local := filepath.Join(root, "local")
 	remote := filepath.Join(root, "remote")
-	_ = os.MkdirAll(local, 0o755)
 	_ = os.MkdirAll(remote, 0o755)
-	_ = os.WriteFile(filepath.Join(local, "keep.txt"), []byte("base"), 0o644)
 	_ = os.WriteFile(filepath.Join(remote, "keep.txt"), []byte("base"), 0o644)
 	id = ident.Ident{By: "me@host", Host: "host"}
-	_ = marker.Write(remote, &marker.Marker{CheckedOutBy: id.By, Host: id.Host, Profile: "work", Relpaths: []string{"."}})
-	files, _ := baseline.Snapshot(local, []string{"."})
-	_ = baseline.Save(&baseline.Baseline{Profile: "work", Relpaths: []string{"."}, Files: files, LastSyncAt: time.Unix(0, 0)})
-	return "work", config.Profile{LocalRoot: local, RemoteRoot: remote}, id
+	p = config.Profile{LocalRoot: local, RemoteRoot: remote}
+	r := lifecycle.Runner{ToolVersion: "test"}
+	if _, err := r.Checkout(context.Background(), "work", p, id, "", lifecycle.Options{}); err != nil {
+		t.Fatalf("fixture checkout: %v", err)
+	}
+	if _, err := r.Sync(context.Background(), "work", p, id, "", lifecycle.Options{}); err != nil {
+		t.Fatalf("fixture first sync: %v", err)
+	}
+	return "work", p, id
 }
 
 // drainStream drains a streaming action command (syncCmd/checkinCmd) to
 // completion, collecting the live events and returning the terminal result.
-func drainStream(t *testing.T, first tea.Msg) ([]reconcile.Event, actionResultMsg) {
+func drainStream(t *testing.T, first tea.Msg) ([]lifecycle.Event, actionResultMsg) {
 	t.Helper()
-	var events []reconcile.Event
+	var events []lifecycle.Event
 	msg := first
 	for {
 		switch v := msg.(type) {
@@ -137,9 +127,9 @@ func TestSyncCmdProducesResult(t *testing.T) {
 	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	name, p, id := tuiHeldFixture(t)
 	// Edit locally after checkout so Sync has something to push.
-	_ = os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("EDITED"), 0o644)
+	_ = os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("EDITED-LONGER"), 0o644)
 
-	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
+	runner := lifecycle.Runner{ToolVersion: "test"}
 	events, res := drainStream(t, syncCmd(context.Background(), runner, id, name, p, 0, lifecycle.Options{})())
 	if res.err != nil {
 		t.Fatalf("sync cmd err: %v", res.err)
@@ -152,7 +142,7 @@ func TestSyncCmdProducesResult(t *testing.T) {
 		t.Fatal("want at least one streamed apply event")
 	}
 	last := events[len(events)-1]
-	if last.Side != reconcile.SideRemote || last.Path != "keep.txt" {
+	if last.Side != lifecycle.SideRemote || last.Path != "keep.txt" {
 		t.Errorf("streamed event = %+v, want a remote change to keep.txt", last)
 	}
 }
@@ -167,10 +157,10 @@ func TestSyncConflictShowsConflictingPathInActivity(t *testing.T) {
 	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	name, p, id := tuiHeldFixture(t)
 	// Same-file conflict: both sides changed since checkout.
-	_ = os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("LOCAL"), 0o644)
-	_ = os.WriteFile(filepath.Join(p.RemoteRoot, "keep.txt"), []byte("REMOTE"), 0o644)
+	_ = os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("LOCAL-version"), 0o644)
+	_ = os.WriteFile(filepath.Join(p.RemoteRoot, "keep.txt"), []byte("RR"), 0o644)
 
-	runner := lifecycle.Runner{Syncer: tuiFakeSyncer{}, ToolVersion: "test"}
+	runner := lifecycle.Runner{ToolVersion: "test"}
 	msg := syncCmd(context.Background(), runner, id, name, p, 0, lifecycle.Options{})()
 	res, ok := msg.(actionResultMsg)
 	if !ok {
@@ -219,8 +209,8 @@ func TestSyncStreamsAppliedChangesLive(t *testing.T) {
 	m.profile.acting = true
 
 	ch := make(chan tea.Msg, 4)
-	m = update(t, m, syncEventMsg{name: "work", event: reconcile.Event{Kind: reconcile.EventAdd, Side: reconcile.SideRemote, Path: "new.txt"}, ch: ch})
-	m = update(t, m, syncEventMsg{name: "work", event: reconcile.Event{Kind: reconcile.EventDelete, Side: reconcile.SideLocal, Path: "old.txt"}, ch: ch})
+	m = update(t, m, syncEventMsg{name: "work", event: lifecycle.Event{Kind: lifecycle.EventAdd, Side: lifecycle.SideRemote, Path: "new.txt"}, ch: ch})
+	m = update(t, m, syncEventMsg{name: "work", event: lifecycle.Event{Kind: lifecycle.EventDelete, Side: lifecycle.SideLocal, Path: "old.txt"}, ch: ch})
 
 	if len(m.profile.applied) != 2 {
 		t.Fatalf("want 2 streamed events, got %d", len(m.profile.applied))

@@ -1,20 +1,32 @@
 package status
 
 import (
+	"context"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
 	"github.com/andresbott/netcheckout/internal/baseline"
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/marker"
+	"github.com/andresbott/netcheckout/pkg/threewayrsync"
 )
+
+func requireRsync(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not on PATH")
+	}
+}
 
 // fixture creates local/ and remote/ dirs under a fresh temp root and points
 // NETCHECKOUT_STATE at a temp state dir so baseline.Load/Save resolve there. It
 // returns the profile name, profile, and the two roots.
 func fixture(t *testing.T) (name string, p config.Profile, local, remote string) {
 	t.Helper()
+	requireRsync(t) // Compute enumerates via the real engine
 	root := t.TempDir()
 	local = filepath.Join(root, "local")
 	remote = filepath.Join(root, "remote")
@@ -45,22 +57,63 @@ func markCheckedOut(t *testing.T, remote string) {
 	}
 }
 
-// baselineFromLocal snapshots the local tree and saves it as the profile's
-// baseline, mimicking the state a checkout+sync leaves behind.
+// baselineFromLocal fingerprints the local tree (size + second-truncated mtime,
+// as rsync listings do) and saves it as the profile's base manifest, mimicking
+// the state a checkout+sync leaves behind.
 func baselineFromLocal(t *testing.T, name, local string) {
 	t.Helper()
-	files, err := baseline.Snapshot(local, []string{"."})
-	if err != nil {
+	files := threewayrsync.Manifest{}
+	err := filepath.WalkDir(local, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || d.Name() == marker.FileName || !d.Type().IsRegular() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(local, path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = threewayrsync.FileState{Size: info.Size(), ModTime: info.ModTime()}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	if err := baseline.Save(&baseline.Baseline{Profile: name, Relpaths: []string{"."}, Files: files}); err != nil {
+	if err := baseline.Save(&baseline.State{Profile: name, Relpaths: []string{"."}, Files: files}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Status is a read-only preview: a fresh checkout whose local root does not
+// exist yet must be reported as all-pulls without creating the directory.
+func TestComputeDoesNotCreateLocalRoot(t *testing.T) {
+	name, p, local, remote := fixture(t)
+	if err := os.RemoveAll(local); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, remote, "file.txt", "data")
+	markCheckedOut(t, remote)
+	// Fresh-checkout state: empty baseline.
+	if err := baseline.Save(&baseline.State{Profile: name, Relpaths: []string{"."}, Files: threewayrsync.Manifest{}}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Compute(context.Background(), name, p)
+	if err != nil {
+		t.Fatalf("compute: %v", err)
+	}
+	if len(st.Targets) != 1 || len(st.Targets[0].Pull) != 1 {
+		t.Errorf("want one pull, got %#v", st.Targets)
+	}
+	if _, err := os.Stat(local); !os.IsNotExist(err) {
+		t.Error("status must not create the local root")
 	}
 }
 
 func TestComputeNotCheckedOut(t *testing.T) {
 	name, p, _, _ := fixture(t)
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +126,7 @@ func TestComputeCheckedOutNoBaseline(t *testing.T) {
 	name, p, _, remote := fixture(t)
 	markCheckedOut(t, remote)
 	// No baseline saved: checked out, but not on this machine.
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +142,7 @@ func TestComputeInSync(t *testing.T) {
 	markCheckedOut(t, remote)
 	baselineFromLocal(t, name, local)
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +181,7 @@ func TestComputeRemoteDeleteIsLocalDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +206,7 @@ func TestComputeLocalDeletePropagatesToRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +222,7 @@ func TestComputeLocalAddIsPush(t *testing.T) {
 	baselineFromLocal(t, name, local) // empty baseline
 	writeFile(t, local, "new.txt", "fresh")
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +238,7 @@ func TestComputeRemoteAddIsPull(t *testing.T) {
 	baselineFromLocal(t, name, local) // empty baseline
 	writeFile(t, remote, "incoming.txt", "fresh")
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +258,7 @@ func TestComputeModifyFlaggedOnEditedFile(t *testing.T) {
 	// Edit locally: an in-baseline file that changed is a modify push.
 	writeFile(t, local, "doc.txt", "v2-longer")
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +278,7 @@ func TestComputeConflict(t *testing.T) {
 	writeFile(t, local, "f.txt", "local-edit")
 	writeFile(t, remote, "f.txt", "remote-edit")
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +291,7 @@ func TestComputeConflict(t *testing.T) {
 func TestComputeRemoteNotMounted(t *testing.T) {
 	name, p, _, _ := fixture(t)
 	p.RemoteRoot = filepath.Join(t.TempDir(), "not-mounted")
-	_, err := Compute(name, p)
+	_, err := Compute(context.Background(), name, p)
 	if err == nil || err.Error() != "remote root "+p.RemoteRoot+" is not mounted" {
 		t.Fatalf("err = %v, want not-mounted error", err)
 	}
@@ -278,7 +331,7 @@ func TestComputeGroupsBySubpath(t *testing.T) {
 	// A new local file under albums/ only.
 	writeFile(t, local, "albums/track.flac", "audio")
 
-	st, err := Compute(name, p)
+	st, err := Compute(context.Background(), name, p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,12 +347,39 @@ func TestComputeGroupsBySubpath(t *testing.T) {
 	}
 }
 
+// Status previews what sync will do, so it must scope by the same recorded
+// checkout relpaths sync uses — not by the config's subpaths. A checkout held
+// for docs/ only must not report an out-of-scope root file as a pending pull
+// (sync would never pull it).
+func TestComputeScopesByCheckoutRelpaths(t *testing.T) {
+	name, p, _, remote := fixture(t)
+	markCheckedOut(t, remote)
+	writeFile(t, remote, "docs/d.txt", "D")
+	writeFile(t, remote, "outside.txt", "X")
+	// Checkout state scoped to docs only, empty baseline (fresh checkout).
+	if err := baseline.Save(&baseline.State{Profile: name, Relpaths: []string{"docs"}, Files: threewayrsync.Manifest{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Compute(context.Background(), name, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Targets) != 1 {
+		t.Fatalf("want one (root) target, got %#v", st.Targets)
+	}
+	pulls := st.Targets[0].Pull
+	if len(pulls) != 1 || pulls[0].Path != "docs/d.txt" {
+		t.Errorf("Pull = %#v, want only docs/d.txt (outside.txt is out of the checkout's scope)", pulls)
+	}
+}
+
 func TestComputeInvalidSubpath(t *testing.T) {
 	name, p, _, remote := fixture(t)
 	p.Subpaths = []string{"../escape"}
 	markCheckedOut(t, remote)
 	baselineFromLocal(t, name, p.LocalRoot)
-	if _, err := Compute(name, p); err == nil {
+	if _, err := Compute(context.Background(), name, p); err == nil {
 		t.Fatal("want an error for a subpath escaping the root")
 	}
 }

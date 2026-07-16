@@ -26,7 +26,7 @@ func TestSyncRefusesUnlistedLocalContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := config.Profile{LocalRoot: local, RemoteRoot: remote, Subpaths: []string{"a"}}
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
+	r := Runner{ToolVersion: "test"}
 
 	_, err := r.Sync(context.Background(), "p", p, id, "", Options{})
 	if err == nil || !strings.Contains(err.Error(), "top.txt") {
@@ -47,7 +47,7 @@ func TestSyncForceDoesNotBypassGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := config.Profile{LocalRoot: local, RemoteRoot: remote, Subpaths: []string{"a"}}
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
+	r := Runner{ToolVersion: "test"}
 
 	// Even with Force: true, the guard must still refuse to proceed
 	_, err := r.Sync(context.Background(), "p", p, id, "", Options{Force: true})
@@ -69,7 +69,7 @@ func TestCheckinRefusesUnlistedLocalContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := config.Profile{LocalRoot: local, RemoteRoot: remote, Subpaths: []string{"a"}}
-	r := Runner{Syncer: &fakeSyncer{}, ToolVersion: "test"}
+	r := Runner{ToolVersion: "test"}
 
 	// Checkin must also refuse when there is unlisted local content
 	_, err := r.Checkin(context.Background(), "p", p, id, Options{})

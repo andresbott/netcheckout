@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/andresbott/netcheckout/internal/baseline"
 	"github.com/andresbott/netcheckout/internal/config"
+	"github.com/andresbott/netcheckout/pkg/threewayrsync"
 )
 
 func writeStatusTestConfig(t *testing.T, profiles map[string]config.Profile) string {
@@ -24,6 +26,7 @@ func writeStatusTestConfig(t *testing.T, profiles map[string]config.Profile) str
 // a temp state dir so status.Compute resolves the baseline there.
 func statusFixture(t *testing.T) (local, remote string) {
 	t.Helper()
+	requireRsync(t) // status.Compute enumerates via the real engine
 	root := t.TempDir()
 	local = filepath.Join(root, "local")
 	remote = filepath.Join(root, "remote")
@@ -36,13 +39,30 @@ func statusFixture(t *testing.T) (local, remote string) {
 	return local, remote
 }
 
+// saveBaseline fingerprints the local tree (size + mtime, like an rsync listing)
+// and saves it as the profile's checkout state.
 func saveBaseline(t *testing.T, name, local string) {
 	t.Helper()
-	files, err := baseline.Snapshot(local, []string{"."})
-	if err != nil {
+	files := threewayrsync.Manifest{}
+	err := filepath.WalkDir(local, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !d.Type().IsRegular() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(local, path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = threewayrsync.FileState{Size: info.Size(), ModTime: info.ModTime()}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	if err := baseline.Save(&baseline.Baseline{Profile: name, Relpaths: []string{"."}, Files: files}); err != nil {
+	if err := baseline.Save(&baseline.State{Profile: name, Relpaths: []string{"."}, Files: files}); err != nil {
 		t.Fatal(err)
 	}
 }

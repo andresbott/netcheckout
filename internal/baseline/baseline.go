@@ -1,35 +1,52 @@
-// Package baseline stores the per-profile checkout baseline: a snapshot of each
-// checked-out tree as it was at checkout, used by sync's three-way merge
-// (GOALS.md §6). It lives in a local state file, never on the remote.
+// Package baseline stores the per-profile checkout state: the base ("last-synced")
+// manifest that powers threewayrsync's three-way merge (GOALS.md §6), plus the relpaths
+// covered and the last sync time. It lives in a local state file, never on the remote,
+// and exposes a threewayrsync.Store so the sync engine loads and commits the base itself.
 package baseline
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/andresbott/netcheckout/internal/marker"
+	"github.com/andresbott/netcheckout/pkg/threewayrsync"
 )
 
-// FileState is one path's recorded state: size, mtime, and content hash.
-type FileState struct {
-	Size    int64     `json:"size"`
-	ModTime time.Time `json:"mtime"`
-	Hash    string    `json:"hash"`
+// State is a profile's checkout state. Files is the base manifest — size and mtime per
+// path, rsync's own quick-check fingerprint. Older state files written by the previous
+// engine carry a content hash per file and nanosecond mtimes; the hash is ignored on load
+// and mtimes are truncated to rsync's one-second resolution (see Load).
+type State struct {
+	Profile  string   `json:"profile"`
+	Relpaths []string `json:"relpaths"`
+	// LocalRoot and RemoteRoot record the resolved roots the baseline was taken
+	// against, binding the state file to the profile as configured at checkout.
+	// A profile whose roots were edited (or recreated under the same name) must
+	// not merge against this manifest. Empty in state files written before this
+	// field existed; callers treat empty as unbound (no check possible).
+	LocalRoot  string                 `json:"local_root,omitempty"`
+	RemoteRoot string                 `json:"remote_root,omitempty"`
+	Files      threewayrsync.Manifest `json:"files"`
+	LastSyncAt time.Time              `json:"last_sync_at"`
 }
 
-// Baseline is a profile's checkout snapshot.
-type Baseline struct {
-	Profile    string               `json:"profile"`
-	Relpaths   []string             `json:"relpaths"`
-	Files      map[string]FileState `json:"files"`
-	LastSyncAt time.Time            `json:"last_sync_at"`
+// Scope translates the recorded relpaths into a threewayrsync scope: a
+// whole-root entry ("." or "", however recorded) anywhere means the whole tree
+// (nil scope); otherwise the cleaned, slash-separated relpaths. Both sync and
+// status derive their engine scope through here, so they can never diverge.
+func (s *State) Scope() []string {
+	var scope []string
+	for _, rp := range s.Relpaths {
+		rp = strings.TrimSpace(rp)
+		if rp == "" || rp == "." {
+			return nil
+		}
+		scope = append(scope, filepath.ToSlash(filepath.Clean(rp)))
+	}
+	return scope
 }
 
 // Dir returns the state directory: $NETCHECKOUT_STATE, else
@@ -56,8 +73,11 @@ func statePath(profile string) (string, error) {
 	return filepath.Join(dir, profile+".json"), nil
 }
 
-// Load reads the baseline for profile. A missing file is (nil, false, nil).
-func Load(profile string) (*Baseline, bool, error) {
+// Load reads the state for profile. A missing file is (nil, false, nil). Every manifest
+// mtime is truncated to whole seconds: rsync's listings carry one-second mtimes, and a
+// nanosecond-precision entry (from a pre-threewayrsync state file) would otherwise make an
+// untouched file look changed against the base on both sides — a false conflict.
+func Load(profile string) (*State, bool, error) {
 	path, err := statePath(profile)
 	if err != nil {
 		return nil, false, err
@@ -69,20 +89,24 @@ func Load(profile string) (*Baseline, bool, error) {
 		}
 		return nil, false, err
 	}
-	var b Baseline
-	if err := json.Unmarshal(data, &b); err != nil {
+	var s State
+	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, false, err
 	}
-	return &b, true, nil
+	for p, fs := range s.Files {
+		fs.ModTime = fs.ModTime.Truncate(time.Second)
+		s.Files[p] = fs
+	}
+	return &s, true, nil
 }
 
-// Save writes b to the state dir atomically (temp file + rename).
-func Save(b *Baseline) error {
-	path, err := statePath(b.Profile)
+// Save writes s to the state dir atomically (temp file + rename).
+func Save(s *State) error {
+	path, err := statePath(s.Profile)
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(b, "", "  ")
+	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -106,7 +130,7 @@ func Save(b *Baseline) error {
 	return os.Rename(tmpName, path)
 }
 
-// Remove deletes the baseline for profile. A missing file is not an error.
+// Remove deletes the state for profile. A missing file is not an error.
 func Remove(profile string) error {
 	path, err := statePath(profile)
 	if err != nil {
@@ -115,121 +139,63 @@ func Remove(profile string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// Best-effort cleanup of the sync lock file living next to the state.
+	_ = os.Remove(path + ".lock")
 	return nil
 }
 
-// HashFile returns the sha256 hex of the file at path.
-func HashFile(path string) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // G304: hashing a file under the user's own configured local root, discovered by Snapshot's walk; not a trust boundary.
+// ProfileStore adapts a profile's state file to threewayrsync.Store: the engine loads the
+// base manifest at the start of a sync and commits the merged base at the end, while the
+// envelope (Relpaths) is preserved and LastSyncAt is stamped on every save. It also
+// implements threewayrsync.Locker via a flock next to the state file, so two concurrent
+// syncs of the same profile cannot interleave.
+type ProfileStore struct {
+	Profile string
+	// Now stamps LastSyncAt on SaveBase; nil means time.Now().UTC.
+	Now func() time.Time
+}
+
+// Store returns the threewayrsync store for a profile.
+func Store(profile string) *ProfileStore { return &ProfileStore{Profile: profile} }
+
+// LoadBase implements threewayrsync.Store: (nil, false, nil) when no state exists.
+func (ps *ProfileStore) LoadBase() (threewayrsync.Manifest, bool, error) {
+	s, ok, err := Load(ps.Profile)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+	return s.Files, true, nil
+}
+
+// SaveBase implements threewayrsync.Store: the merged base replaces Files, the rest of the
+// envelope is preserved (or freshly created when a sync runs without a prior checkout
+// state — the lifecycle layer guards against that, so it is defensive here).
+func (ps *ProfileStore) SaveBase(m threewayrsync.Manifest) error {
+	s, ok, err := Load(ps.Profile)
 	if err != nil {
-		return "", err
+		return err
 	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+	if !ok {
+		s = &State{Profile: ps.Profile}
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	s.Files = m
+	s.LastSyncAt = ps.now()
+	return Save(s)
 }
 
-// Snapshot walks each relpath subtree under root and returns a size+mtime+hash
-// manifest of every regular file, keyed by slash path relative to root. The
-// marker file at any level is excluded. A relpath of "." (or "") means the whole
-// root. A relpath whose subtree does not exist yet is skipped, not an error.
-func Snapshot(root string, relpaths []string) (map[string]FileState, error) {
-	if len(relpaths) == 0 {
-		relpaths = []string{"."}
-	}
-	out := map[string]FileState{}
-	for _, rp := range relpaths {
-		base := filepath.Join(root, filepath.Clean(rp))
-		if _, err := os.Stat(base); errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() || d.Name() == marker.FileName {
-				return nil
-			}
-			if !d.Type().IsRegular() {
-				return nil // skip symlinks and other non-regular entries; the manifest tracks regular files only
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			hash, err := HashFile(path)
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			out[filepath.ToSlash(rel)] = FileState{Size: info.Size(), ModTime: info.ModTime(), Hash: hash}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// Scan walks each relpath subtree under root and returns a size+mtime manifest
-// (no hash — that is the fast path) of every regular file, keyed by slash path
-// relative to root. The marker file is excluded. A missing subtree is skipped.
-func Scan(root string, relpaths []string) (map[string]FileState, error) {
-	if len(relpaths) == 0 {
-		relpaths = []string{"."}
-	}
-	out := map[string]FileState{}
-	for _, rp := range relpaths {
-		base := filepath.Join(root, filepath.Clean(rp))
-		if _, err := os.Stat(base); errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		err := filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			if d.IsDir() || d.Name() == marker.FileName {
-				return nil
-			}
-			if !d.Type().IsRegular() {
-				return nil // skip symlinks and other non-regular entries; the manifest tracks regular files only
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			out[filepath.ToSlash(rel)] = FileState{Size: info.Size(), ModTime: info.ModTime()}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// Changed reports whether the file at absPath differs from base. Fast path: if
-// size and mtime both match base, it is unchanged without reading the file.
-// Otherwise it hashes absPath and compares to base.Hash (so a mtime-only change
-// with identical content — common on network shares — is not a false positive).
-func Changed(base, cur FileState, absPath string) (bool, error) {
-	if cur.Size == base.Size && cur.ModTime.Equal(base.ModTime) {
-		return false, nil
-	}
-	h, err := HashFile(absPath)
+// TryLock implements threewayrsync.Locker by delegating to the flock-based lock
+// threewayrsync.FileStore provides, placed next to the profile's state file.
+func (ps *ProfileStore) TryLock() (func(), error) {
+	path, err := statePath(ps.Profile)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	return h != base.Hash, nil
+	return threewayrsync.FileStore{Path: path}.TryLock()
+}
+
+func (ps *ProfileStore) now() time.Time {
+	if ps.Now != nil {
+		return ps.Now()
+	}
+	return time.Now().UTC()
 }

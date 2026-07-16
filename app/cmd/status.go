@@ -36,7 +36,7 @@ func newStatusCmd(cfgPath *string) *cobra.Command {
 					_, _ = fmt.Fprintf(w, "  %s\n", u)
 				}
 			}
-			st, err := status.Compute(name, profile)
+			st, err := status.Compute(cmd.Context(), name, profile)
 			if err != nil {
 				return err
 			}

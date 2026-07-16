@@ -6,7 +6,6 @@ import (
 
 	"github.com/andresbott/netcheckout/internal/lifecycle"
 	"github.com/andresbott/netcheckout/internal/localstat"
-	"github.com/andresbott/netcheckout/internal/reconcile"
 	"github.com/andresbott/netcheckout/internal/sanity"
 	"github.com/andresbott/netcheckout/internal/status"
 	"github.com/charmbracelet/lipgloss"
@@ -24,7 +23,7 @@ type profileModel struct {
 	result       *status.ProfileStatus // last successful Status result; nil until run
 	err          error                 // last Status error; nil if none
 	acting       bool                  // a mutating action (Checkout) is in flight
-	applied      []reconcile.Event     // changes streamed live by the in-flight/last Sync or Check-in
+	applied      []lifecycle.Event     // changes streamed live by the in-flight/last Sync or Check-in
 	actionReport *lifecycle.Report     // last successful action's outcome; nil until run
 	actionErr    error                 // last action error; nil if none
 	scanning     bool                  // a local file-stat scan is in flight (part of Status)
@@ -187,7 +186,7 @@ func conflictBody(rep lifecycle.Report) string {
 
 // appliedBody renders a list of applied changes as status-view rows (verb → side
 // path), or placeholder when the list is empty.
-func appliedBody(events []reconcile.Event, placeholder string) string {
+func appliedBody(events []lifecycle.Event, placeholder string) string {
 	if len(events) == 0 {
 		return placeholder
 	}
@@ -199,11 +198,11 @@ func appliedBody(events []reconcile.Event, placeholder string) string {
 }
 
 // appliedVerb maps an applied change's kind to its status-view verb and style.
-func appliedVerb(k reconcile.EventKind) verbStyle {
+func appliedVerb(k lifecycle.EventKind) verbStyle {
 	switch k {
-	case reconcile.EventAdd:
+	case lifecycle.EventAdd:
 		return verbStyle{"add", okStyle}
-	case reconcile.EventDelete:
+	case lifecycle.EventDelete:
 		return verbStyle{"delete", errStyle}
 	default:
 		return verbStyle{"modify", lipgloss.NewStyle()}
@@ -211,8 +210,8 @@ func appliedVerb(k reconcile.EventKind) verbStyle {
 }
 
 // sideLabel is the side token an applied change landed on.
-func sideLabel(s reconcile.Side) string {
-	if s == reconcile.SideRemote {
+func sideLabel(s lifecycle.Side) string {
+	if s == lifecycle.SideRemote {
 		return "remote"
 	}
 	return "local"

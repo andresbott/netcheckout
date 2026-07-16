@@ -15,7 +15,7 @@ import (
 func TestCheckinCommandReleases(t *testing.T) {
 	cfgPath, remote := heldCmdFixture(t) // in sync: local == remote == baseline
 
-	cmd := newCheckinCmdWithRunner(&cfgPath, lifecycle.Runner{Syncer: cmdCopySyncer{}, ToolVersion: "test"})
+	cmd := newCheckinCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"work"})
@@ -33,7 +33,7 @@ func TestCheckinCommandRefusesUnsynced(t *testing.T) {
 	lroot := cfg.Profiles["work"].LocalRoot
 	_ = os.WriteFile(filepath.Join(lroot, "keep.txt"), []byte("EDITED"), 0o644) // unsynced local edit
 
-	cmd := newCheckinCmdWithRunner(&cfgPath, lifecycle.Runner{Syncer: cmdCopySyncer{}, ToolVersion: "test"})
+	cmd := newCheckinCmdWithRunner(&cfgPath, lifecycle.Runner{ToolVersion: "test"})
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{"work"})

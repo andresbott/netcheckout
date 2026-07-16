@@ -3,11 +3,12 @@ package threewayrsync
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
 )
 
 func TestBuildListArgsLocal(t *testing.T) {
-	got := buildListArgs(Endpoint{Path: "/data"}, "/tmp/empty", nil)
+	got := buildListArgs(Endpoint{Path: "/data"}, "/tmp/empty", nil, nil)
 	for _, want := range []string{"--recursive", "--dry-run", "--itemize-changes", "--out-format=%i %l %M %n", "--exclude=.rsync-partial"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("list args missing %q: %v", want, got)
@@ -19,7 +20,7 @@ func TestBuildListArgsLocal(t *testing.T) {
 }
 
 func TestBuildListArgsSSHAddsRsh(t *testing.T) {
-	got := buildListArgs(Endpoint{Path: "/data", SSH: &SSH{Host: "nas", Port: 2222}}, "/tmp/empty", nil)
+	got := buildListArgs(Endpoint{Path: "/data", SSH: &SSH{Host: "nas", Port: 2222}}, "/tmp/empty", nil, nil)
 	if !slices.Contains(got, "--rsh=ssh -p 2222") {
 		t.Errorf("missing rsh: %v", got)
 	}
@@ -28,8 +29,35 @@ func TestBuildListArgsSSHAddsRsh(t *testing.T) {
 	}
 }
 
+func TestBuildListArgsDaemonAddsPasswordFile(t *testing.T) {
+	got := buildListArgs(Endpoint{Path: "p", Daemon: &Daemon{Host: "nas", Module: "m", PasswordFile: "/pw"}}, "/tmp/empty", nil, nil)
+	if !slices.Contains(got, "--password-file=/pw") {
+		t.Errorf("missing password-file: %v", got)
+	}
+	if got[len(got)-2] != "rsync://nas/m/p/" {
+		t.Errorf("src = %q", got[len(got)-2])
+	}
+}
+
+func TestBuildTransferArgsDaemon(t *testing.T) {
+	got := buildTransferArgs(Endpoint{Path: "/src"}, Endpoint{Daemon: &Daemon{Host: "nas", Module: "m", PasswordFile: "/pw"}}, false, nil, nil)
+	if !slices.Contains(got, "--password-file=/pw") {
+		t.Errorf("missing password-file: %v", got)
+	}
+	if got[len(got)-1] != "rsync://nas/m" {
+		t.Errorf("dst = %q", got[len(got)-1])
+	}
+	// No password file => no auth flag.
+	got = buildTransferArgs(Endpoint{Path: "/src"}, Endpoint{Daemon: &Daemon{Host: "nas", Module: "m"}}, false, nil, nil)
+	for _, a := range got {
+		if strings.HasPrefix(a, "--password-file") {
+			t.Errorf("unexpected password-file flag: %v", got)
+		}
+	}
+}
+
 func TestBuildTransferArgsHasPartialAndFiles(t *testing.T) {
-	got := buildTransferArgs(Endpoint{Path: "/src"}, Endpoint{Path: "/dst"}, false, nil)
+	got := buildTransferArgs(Endpoint{Path: "/src"}, Endpoint{Path: "/dst"}, false, nil, nil)
 	for _, want := range []string{"--recursive", "--links", "--times", "--itemize-changes", "--partial-dir=.rsync-partial", "--exclude=.rsync-partial"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("transfer args missing %q: %v", want, got)
@@ -44,7 +72,7 @@ func TestBuildTransferArgsHasPartialAndFiles(t *testing.T) {
 }
 
 func TestBuildTransferArgsChecksumAndExclude(t *testing.T) {
-	got := buildTransferArgs(Endpoint{Path: "/src"}, Endpoint{Path: "/dst", SSH: &SSH{Host: "h", Port: 2222}}, true, []string{".git"})
+	got := buildTransferArgs(Endpoint{Path: "/src"}, Endpoint{Path: "/dst", SSH: &SSH{Host: "h", Port: 2222}}, true, []string{".git"}, nil)
 	for _, want := range []string{"--checksum", "--exclude=.git", "--rsh=ssh -p 2222"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("missing %q: %v", want, got)
@@ -58,8 +86,8 @@ func TestBuildTransferArgsChecksumAndExclude(t *testing.T) {
 func TestWithFilesFromInsertsBeforePaths(t *testing.T) {
 	args := []string{"--recursive", "--partial", "/src/", "/dst"}
 	got := withFilesFrom(args, "/tmp/list")
-	if got[len(got)-3] != "--files-from=/tmp/list" {
-		t.Fatalf("files-from not spliced before paths: %v", got)
+	if got[len(got)-4] != "--files-from=/tmp/list" || got[len(got)-3] != "--from0" {
+		t.Fatalf("files-from/from0 not spliced before paths: %v", got)
 	}
 	if got[len(got)-2] != "/src/" || got[len(got)-1] != "/dst" {
 		t.Fatalf("positional paths disturbed: %v", got)
@@ -67,7 +95,8 @@ func TestWithFilesFromInsertsBeforePaths(t *testing.T) {
 }
 
 func TestWriteFileListRoundTrip(t *testing.T) {
-	name, err := writeFileList([]string{"a.txt", "sub/b.txt"})
+	// NUL-separated (--from0) so a filename containing a newline stays one entry.
+	name, err := writeFileList([]string{"a.txt", "sub/b.txt", "odd\nname.txt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,18 +105,27 @@ func TestWriteFileListRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != "a.txt\nsub/b.txt\n" {
+	if string(data) != "a.txt\x00sub/b.txt\x00odd\nname.txt\x00" {
 		t.Errorf("file list = %q", string(data))
 	}
 }
 
-func TestSSHCmdArgs(t *testing.T) {
-	got := sshCmdArgs(&SSH{User: "a", Host: "nas", Port: 2222, IdentityFile: "/k"})
-	want := []string{"-p", "2222", "-i", "/k", "a@nas"}
-	if !slices.Equal(got, want) {
-		t.Errorf("sshCmdArgs = %v, want %v", got, want)
+func TestBuildDeleteArgs(t *testing.T) {
+	got := buildDeleteArgs("/tmp/empty", Endpoint{Path: "/data", SSH: &SSH{Host: "nas", Port: 2222}})
+	for _, want := range []string{"--recursive", "--delete-missing-args", "--rsh=ssh -p 2222"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("delete args missing %q: %v", want, got)
+		}
 	}
-	if got := sshCmdArgs(&SSH{Host: "nas"}); !slices.Equal(got, []string{"nas"}) {
-		t.Errorf("defaults = %v, want [nas]", got)
+	if got[len(got)-2] != "/tmp/empty/" || got[len(got)-1] != "nas:/data/" {
+		t.Errorf("src/dst = %q %q", got[len(got)-2], got[len(got)-1])
+	}
+
+	got = buildDeleteArgs("/tmp/empty", Endpoint{Path: "p", Daemon: &Daemon{Host: "nas", Module: "m", PasswordFile: "/pw"}})
+	if !slices.Contains(got, "--password-file=/pw") {
+		t.Errorf("missing password-file: %v", got)
+	}
+	if got[len(got)-1] != "rsync://nas/m/p/" {
+		t.Errorf("dst = %q", got[len(got)-1])
 	}
 }

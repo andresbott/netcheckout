@@ -38,22 +38,25 @@ func renderFooter(width int) string {
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")
 }
 
-// renderProfileFooter is the actions-substate bottom key-hint bar. force
-// reflects the current toggle state for the mutating actions. (The clean option
-// is check-in only and lives as a checkbox in that dialog, not on this bar.)
-// The hints are pane-aware: the Actions pane offers Run/Select plus a Tab to the
-// Activity panel; the Activity pane offers the scroll keys plus a Tab back.
-func renderProfileFooter(width int, force, activityFocused bool) string {
+// renderProfileFooter is the actions-substate bottom key-hint bar. force and
+// allowDeletes reflect the current toggle states for the mutating actions. (The
+// clean option is check-in only and lives as a checkbox in that dialog, not on
+// this bar.) The hints are pane-aware: the Actions pane offers Run/Select plus
+// a Tab to the Activity panel; the Activity pane offers the scroll keys plus a
+// Tab back.
+func renderProfileFooter(width int, force, allowDeletes, activityFocused bool) string {
 	var parts []string
 	if activityFocused {
 		parts = []string{
 			hint("↑↓/PgUp/PgDn", "Scroll"), hint("tab", "Actions"),
 			hint("esc", "Back"), hint("f", "force:"+onOff(force)),
+			hint("x", "allow-deletes:"+onOff(allowDeletes)),
 		}
 	} else {
 		parts = []string{
 			hint("↵", "Run"), hint("↑↓", "Select"), hint("tab", "Activity"),
 			hint("esc", "Back"), hint("f", "force:"+onOff(force)),
+			hint("x", "allow-deletes:"+onOff(allowDeletes)),
 		}
 	}
 	return ansi.Truncate(" "+strings.Join(parts, "  "), width, "")

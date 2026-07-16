@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/andresbott/netcheckout/internal/lifecycle"
-	"github.com/andresbott/netcheckout/internal/rsync"
+	"github.com/andresbott/netcheckout/pkg/threewayrsync"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -152,14 +152,14 @@ type blockingSyncer struct {
 	started chan struct{}
 }
 
-func (b *blockingSyncer) Sync(ctx context.Context, _ rsync.Job) (rsync.Result, error) {
+func (b *blockingSyncer) Sync(ctx context.Context, _, _ threewayrsync.Endpoint, _ threewayrsync.Options) (threewayrsync.Result, error) {
 	b.once.Do(func() { close(b.started) })
 	<-ctx.Done()
-	return rsync.Result{}, ctx.Err()
+	return threewayrsync.Result{}, ctx.Err()
 }
 
-func (*blockingSyncer) Diff(context.Context, rsync.Job) (rsync.Diff, error) {
-	return rsync.Diff{}, nil
+func (*blockingSyncer) Diff(context.Context, threewayrsync.Endpoint, threewayrsync.Endpoint, threewayrsync.Options) (threewayrsync.Plan, error) {
+	return threewayrsync.Plan{}, nil
 }
 
 // TestSyncCancelStopsRunningRsync proves the cancelable context reaches the rsync
@@ -169,12 +169,12 @@ func TestSyncCancelStopsRunningRsync(t *testing.T) {
 	t.Setenv("NETCHECKOUT_STATE", t.TempDir())
 	name, p, id := tuiHeldFixture(t)
 	// A local edit gives the reconcile a push to apply, so it reaches Syncer.Sync.
-	if err := os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("EDITED"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(p.LocalRoot, "keep.txt"), []byte("EDITED-LONGER"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	bs := &blockingSyncer{started: make(chan struct{})}
-	runner := lifecycle.Runner{Syncer: bs, ToolVersion: "test"}
+	runner := lifecycle.Runner{NewSyncer: func(threewayrsync.Store) lifecycle.Syncer { return bs }, ToolVersion: "test"}
 	ctx, cancel := context.WithCancel(context.Background())
 	// syncCmd starts the background goroutine immediately; the fake Sync blocks.
 	cmd := syncCmd(ctx, runner, id, name, p, 1, lifecycle.Options{})

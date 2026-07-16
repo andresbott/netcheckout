@@ -15,6 +15,12 @@ import (
 // FileName is the marker's filename, placed at a profile's remote root.
 const FileName = ".netcheckout.json"
 
+// Exclude is the engine exclude list that keeps the marker out of every sync
+// and diff: the cooperative lock is metadata, not content — it must never be
+// pulled, pushed, or counted as a discrepancy. Shared by lifecycle and status
+// so the two can't drift.
+func Exclude() []string { return []string{"/" + FileName} }
+
 // Marker is the on-disk lock record (GOALS.md §5).
 type Marker struct {
 	CheckedOutBy string    `json:"checked_out_by"`

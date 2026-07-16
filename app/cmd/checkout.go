@@ -9,12 +9,11 @@ import (
 	"github.com/andresbott/netcheckout/internal/config"
 	"github.com/andresbott/netcheckout/internal/ident"
 	"github.com/andresbott/netcheckout/internal/lifecycle"
-	"github.com/andresbott/netcheckout/internal/rsync"
 	"github.com/spf13/cobra"
 )
 
 func newCheckoutCmd(cfgPath *string) *cobra.Command {
-	return newCheckoutCmdWithRunner(cfgPath, lifecycle.Runner{Syncer: rsync.New(), ToolVersion: metainfo.Version})
+	return newCheckoutCmdWithRunner(cfgPath, lifecycle.Runner{ToolVersion: metainfo.Version})
 }
 
 func newCheckoutCmdWithRunner(cfgPath *string, r lifecycle.Runner) *cobra.Command {
